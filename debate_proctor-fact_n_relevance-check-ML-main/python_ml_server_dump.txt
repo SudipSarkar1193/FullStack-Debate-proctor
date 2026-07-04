@@ -1,0 +1,1531 @@
+================ requirements.txt ================
+requirements.txt not found
+
+==================================================
+FILE: ./api.py
+==================================================
+import sys
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from search_engine import core
+from config import TOPIC_REGISTRY
+
+# --- DATA MODELS ---
+class AnalyzeRequest(BaseModel):
+    text: str
+    previous_text: Optional[str] = None  # User's previous message (for logic check)
+    topic: str = "ai"  # Topic key from TOPIC_REGISTRY (e.g. "ai", "aadhaar")
+
+class EvidenceItem(BaseModel):
+    text: str
+    source: str
+    url: str
+    similarity: float  
+
+class AnalyzeResponse(BaseModel):
+    # Factual Results
+    verdict: str
+    factual_score: float
+    explanation: str
+    
+    # Relevance Results
+    relevance_score: float
+    discourse_category: str
+    discourse_reason: str
+    
+    # Debug/Math Details
+    support_mass: float
+    refute_mass: float
+    neutral_mass: float
+    topic_similarity: float
+    
+    evidence: List[EvidenceItem]
+
+# --- LIFECYCLE ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 API Starting...")
+    # Pre-warm brains for all configured topics. Lazy-loading still works
+    # if any one fails — search() will load on demand.
+    for topic in TOPIC_REGISTRY.keys():
+        try:
+            core.load_brain(topic)
+            print(f"✅ Brain ready for [{topic}]")
+        except Exception as e:
+            print(f"⚠️ Brain pre-warm failed for [{topic}]: {e} (will lazy-load on first request)")
+    yield
+    print("💤 API Stopping...")
+
+app = FastAPI(title="Debate Analyzer AI", lifespan=lifespan)
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+def analyze_claim(request: AnalyzeRequest):
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Empty text")
+
+    # Normalize the topic key — accept any case, validate against registry
+    topic_key = request.topic.lower().strip()
+    if topic_key not in TOPIC_REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown topic '{request.topic}'. Available: {list(TOPIC_REGISTRY.keys())}"
+        )
+
+    try:
+        # Call the Orchestrator in core.py
+        result = core.orchestrate_analysis(
+            text=request.text,
+            previous_text=request.previous_text,
+            topic=topic_key
+        )
+        
+        # Map Dict to Pydantic Model
+        return AnalyzeResponse(
+            verdict=result['fact_verdict'],
+            factual_score=result['fact_score'],
+            explanation=result['fact_explanation'],
+            
+            relevance_score=result['relevance_score'],
+            discourse_category=result['relevance_category'],
+            discourse_reason=result['relevance_reason'],
+            
+            support_mass=result['support_mass'],
+            refute_mass=result['refute_mass'],
+            neutral_mass=result['neutral_mass'],
+            topic_similarity=result['topic_similarity'],
+            
+            evidence=[
+                EvidenceItem(
+                    text=f['text'],
+                    source=f['source'],
+                    url=f['url'],
+                    similarity=f['similarity']
+                ) for f in result['evidence']
+            ]
+        )
+        
+    except FileNotFoundError as e:
+        # Brain not built yet for this topic
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        print(f"❌ API Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+==================================================
+FILE: ./main.py
+==================================================
+import argparse
+from database import operations as db
+from scraper import crawler
+from config import TOPIC_REGISTRY
+
+def main():
+    # Parse Command Line Arguments
+    parser = argparse.ArgumentParser(description="Ingest Wikipedia data for a specific topic.")
+    parser.add_argument("--topic", type=str, required=True, help="The topic key (e.g., 'ai', 'aadhaar')")
+    args = parser.parse_args()
+    
+    topic = args.topic.lower()
+
+    # Validate Topic
+    if topic not in TOPIC_REGISTRY:
+        print(f"❌ Error: Topic '{topic}' not found in config.py")
+        print(f"   Available topics: {list(TOPIC_REGISTRY.keys())}")
+        return
+
+    print(f"🚀 Starting Phase 1: Ingestion Engine for TOPIC: [{topic.upper()}]")
+    
+    # Load Topic Config
+    target_categories = TOPIC_REGISTRY[topic]["categories"]
+
+    # Ensure DB is ready (for this specific topic)
+    db.init_db(topic)
+
+    total_saved = 0
+
+    # Loop through categories for this topic
+    for category in target_categories:
+        print(f"\n--- Processing: {category} ---")
+        
+        # Crawler remains generic (it just fetches what we tell it)
+        pages_generator = crawler.fetch_category_pages(category)
+        
+        for page_data in pages_generator:
+            
+            # Check DB specific to this topic
+            if db.page_exists(topic, page_data['pageid']):
+                print(f"   ⏩ Exists: {page_data['title']}")
+                continue 
+
+            if not page_data['content']:
+                continue
+
+            # Save to the specific topic DB
+            success = db.save_page(topic, page_data)
+            
+            if success:
+                print(f"   💾 Saved: {page_data['title']}")
+                total_saved += 1
+            else:
+                print(f"   ⏩ Skipped: {page_data['title']}")
+
+    print(f"\n🎉 Ingestion Complete for {topic.upper()}!")
+    print(f"Total pages stored in {TOPIC_REGISTRY[topic]['db_config']['dbname']}: {total_saved}")
+
+if __name__ == "__main__":
+    main()
+==================================================
+FILE: ./check_models.py
+==================================================
+import os
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
+api_key = os.getenv("API_KEY")
+
+if not api_key:
+    print("❌ Error: API_KEY not found in .env")
+    exit()
+
+print(f"🔑 Checking models for API Key: {api_key[:5]}...")
+print("-" * 30)
+
+client = genai.Client(api_key=api_key)
+
+try:
+    for m in client.models.list():
+        print(f"✅ AVAILABLE: {m.name}")
+except Exception as e:
+    print(f"❌ Error listing models: {e}")
+==================================================
+FILE: ./test_wiki_fetch.py
+==================================================
+import wikipediaapi
+
+# Based on the Wikipedia Category page you found
+CATEGORIES_TO_SCAN = [
+    # The Main Technical Definitions
+    "Category:Artificial_intelligence",
+    "Category:Generative_artificial_intelligence",
+    "Category:Machine_learning",
+
+    # The "Debate" Topics (Critical for your project)
+    "Category:Artificial_intelligence_controversies", # <--- Index 3
+    "Category:Criticism_of_artificial_intelligence",
+    "Category:Ethics_of_artificial_intelligence",
+    "Category:Existential_risk_from_artificial_intelligence",
+    "Category:Regulation_of_artificial_intelligence",
+    "Category:Philosophy_of_artificial_intelligence",
+    "Category:Deaths_caused_by_robots_and_artificial_intelligence", 
+    "Category:AI_safety"
+]
+
+# 1. SETUP
+wiki_wiki = wikipediaapi.Wikipedia(
+    user_agent='MyAI_Test_Script/1.0 (contact: test@example.com)',
+    language='en'
+)
+
+# Global counter
+count = 0
+MAX_LIMIT = 100
+MAX_LEVEL = 2
+captured_titles = []
+
+def print_categorymembers(categorymembers, level=0):
+    global count
+    for c in categorymembers.values():
+        if count >= MAX_LIMIT or level >= MAX_LEVEL:
+            return
+
+        indent = "  " * level
+        
+        if c.ns == wikipediaapi.Namespace.MAIN:
+            print(f"{indent}[ARTICLE] {c.title}")
+            captured_titles.append(c.title)
+            count += 1
+        elif c.ns == wikipediaapi.Namespace.CATEGORY:
+            print(f"{indent}[CATEGORY] {c.title}")
+            print_categorymembers(c.categorymembers, level + 1)
+
+def test_single_page_content(page_title):
+    print(f"\n\n{'='*40}")
+    print(f"TESTING PAGE CONTENT: {page_title}")
+    print(f"{'='*40}")
+    
+    page = wiki_wiki.page(page_title)
+    if page.exists():
+        print(f"URL: {page.fullurl}")
+        print("-" * 20)
+        print(page.text[:1000] + "\n\n... [Content Truncated] ...") 
+    else:
+        print(f"Page '{page_title}' does not exist.")
+
+# --- EXECUTION ---
+
+
+target_cat_name = CATEGORIES_TO_SCAN[3] # (Artificial_intelligence_controversies)
+
+print(f"🚀 Fetching first {MAX_LIMIT} pages from: {target_cat_name}...\n")
+
+cat = wiki_wiki.page(target_cat_name)
+
+if cat.exists():
+    print_categorymembers(cat.categorymembers)
+    
+    # Test the first article found
+    if captured_titles:
+        test_single_page_content(captured_titles[0])
+    else:
+        print("\n❌ No articles found in this category.")
+else:
+    print(f"\n❌ Error: The category '{target_cat_name}' does not exist.")
+==================================================
+FILE: ./search_engine/core.py
+==================================================
+import sys
+import os
+import pickle
+import numpy as np
+import faiss
+import json
+from sentence_transformers import SentenceTransformer
+from google import genai
+from google.genai import types
+
+# For retry:
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# For path resolution
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from dotenv import load_dotenv
+from config import TOPIC_REGISTRY
+
+# Import the new Relevance Module
+from search_engine import relevance
+
+# --- 2. CONFIGURATION ---
+load_dotenv()
+GEMINI_API_KEY = os.getenv("API_KEY")
+
+if not GEMINI_API_KEY:
+    raise ValueError("❌ API_KEY not found in .env file!")
+else:
+    print(f"🔑 Using API Key for Verifier: {GEMINI_API_KEY[:5]}...")
+
+# 1. Modern Gemini Client
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# 2. Local BAAI Embedding Model
+print("📥 Loading BAAI/bge-small-en-v1.5 locally...")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+VERIFIER_MODEL = "gemini-3.1-flash-lite"
+
+# --- SCORING THRESHOLDS (tunable) ---
+DECISIVE_MASS_FLOOR = 0.3
+VERDICT_THRESHOLD = 0.3
+
+
+# --- 3. BRAIN MANAGER (Multi-Tenant) ---
+ACTIVE_BRAINS = {}
+
+def get_brain_paths(topic):
+    """Returns file paths for a specific topic."""
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    root_path = os.path.join(base_path, '..')
+    data_dir = os.path.join(root_path, 'data', topic)
+    
+    return {
+        "index": os.path.join(data_dir, 'vector_store.index'),
+        "meta": os.path.join(data_dir, 'metadata.pkl')
+    }
+
+def load_brain(topic):
+    """Loads a specific topic's brain into memory."""
+    if topic in ACTIVE_BRAINS:
+        return ACTIVE_BRAINS[topic]
+    
+    print(f"🧠 Loading Brain for topic: [{topic.upper()}]...")
+    paths = get_brain_paths(topic)
+    
+    if not os.path.exists(paths['index']) or not os.path.exists(paths['meta']):
+        raise FileNotFoundError(f"❌ Brain files not found for '{topic}'. Run build_index.py first.")
+        
+    try:
+        index = faiss.read_index(paths['index'])
+        with open(paths['meta'], 'rb') as f:
+            metadata = pickle.load(f)
+            
+        ACTIVE_BRAINS[topic] = {"index": index, "metadata": metadata}
+        print(f"✅ Brain Loaded! ({len(metadata)} memories)")
+        return ACTIVE_BRAINS[topic]
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to load brain for {topic}: {e}")
+
+def search(topic, query, k=3):
+    """Topic-aware search."""
+    brain = load_brain(topic)
+    index = brain["index"]
+    metadata = brain["metadata"]
+    
+    print(f"🔍 Searching [{topic.upper()}]: '{query[:50]}...'")
+    
+    # NEW: Generate query embedding locally using BAAI
+    query_vec = embedding_model.encode([query], normalize_embeddings=True).astype('float32')
+    
+    distances, indices = index.search(query_vec, k)
+    
+    results = []
+    for i, idx in enumerate(indices[0]):
+        if idx == -1 or idx >= len(metadata): continue 
+        
+        meta = metadata[idx]
+        l2_distance = float(distances[0][i])
+        similarity = max(0.0, min(1.0, 1 - (l2_distance / 2)))
+        
+        results.append({
+            "text": meta['text'],
+            "source": meta['title'],
+            "url": meta['url'],
+            "similarity": similarity
+        })
+        
+    return results
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(Exception) # Retries on any exception, including 503s
+)
+def verify_claim_with_llm(claim, facts):
+    """Per-chunk verdict classification using the new google-genai SDK."""
+    if not facts:
+        return {
+            "per_chunk": [],
+            "global_explanation": "No evidence retrieved."
+        }
+    
+    evidence_text = ""
+    for i, f in enumerate(facts):
+        evidence_text += f"EVIDENCE #{i} (Source: {f['source']}, Sim: {f['similarity']:.2f}):\n{f['text']}\n\n"
+        
+    prompt = f"""SYSTEM: You are a strict fact-checker. For each piece of evidence,
+decide whether it SUPPORTS, CONTRADICTS, or is NEUTRAL toward the claim.
+
+- SUPPORT: the evidence directly affirms the claim or provides facts entailing it.
+- CONTRADICT: the evidence directly refutes the claim or provides facts incompatible with it.
+- NEUTRAL: the evidence is on-topic but does not directly bear on the claim's truth value,
+  OR the evidence is off-topic / unrelated.
+
+Be strict. If the evidence only tangentially relates to the claim, label NEUTRAL,
+not SUPPORT.
+
+CLAIM: "{claim}"
+
+{evidence_text}
+
+OUTPUT JSON ONLY in this exact schema:
+{{
+  "per_chunk": [
+    {{"index": 0, "label": "SUPPORT|CONTRADICT|NEUTRAL", "confidence": 0.0-1.0, "reason": "<one short sentence>"}},
+    ...one entry per evidence chunk in order...
+  ],
+  "global_explanation": "<one sentence summarizing the overall picture>"
+}}
+"""
+    
+    try:
+        response = client.models.generate_content(
+            model=VERIFIER_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                safety_settings=[
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                ]
+            )
+        )
+        data = json.loads(response.text)
+        per_chunk = data.get("per_chunk", [])
+        normalized = []
+        for i in range(len(facts)):
+            if i < len(per_chunk) and isinstance(per_chunk[i], dict):
+                entry = per_chunk[i]
+                label = entry.get("label", "NEUTRAL").upper()
+                if label not in ("SUPPORT", "CONTRADICT", "NEUTRAL"):
+                    label = "NEUTRAL"
+                conf = float(entry.get("confidence", 0.5))
+                conf = max(0.0, min(1.0, conf))
+                normalized.append({
+                    "index": i,
+                    "label": label,
+                    "confidence": conf,
+                    "reason": entry.get("reason", "")
+                })
+            else:
+                normalized.append({
+                    "index": i, "label": "NEUTRAL", "confidence": 0.0,
+                    "reason": "missing from LLM output"
+                })
+        return {
+            "per_chunk": normalized,
+            "global_explanation": data.get("global_explanation", "")
+        }
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        return {
+            "per_chunk": [{"index": i, "label": "NEUTRAL", "confidence": 0.0,
+                           "reason": "LLM failure"} for i in range(len(facts))],
+            "global_explanation": "LLM Failure"
+        }
+
+
+def calculate_mathematical_score(llm_result, facts):
+    """Principled aggregation across per-chunk verdicts."""
+    per_chunk = llm_result.get("per_chunk", [])
+    
+    support_mass = 0.0
+    refute_mass = 0.0
+    neutral_mass = 0.0
+    
+    print("\n🧮 MATH ENGINE:")
+    for f, verdict in zip(facts, per_chunk):
+        sim = f['similarity']
+        conf = verdict['confidence']
+        weight = sim * conf  
+        label = verdict['label']
+        
+        if label == "SUPPORT":
+            support_mass += weight
+        elif label == "CONTRADICT":
+            refute_mass += weight
+        else:
+            neutral_mass += weight
+        
+        print(f"   - '{f['source']}': sim={sim:.2f} conf={conf:.2f} → {label} (w={weight:.2f})")
+    
+    decisive_mass = support_mass + refute_mass
+    
+    if decisive_mass < DECISIVE_MASS_FLOOR:
+        final_verdict = "NOT_VERIFIABLE"
+        final_score = 50.0
+        raw_score = 0.0
+        print(f"   ⚠️  Decisive mass {decisive_mass:.2f} < floor {DECISIVE_MASS_FLOOR}. Abstaining.")
+    else:
+        raw_score = (support_mass - refute_mass) / decisive_mass  
+        final_score = round((raw_score + 1) / 2 * 100, 2)         
+        if raw_score > VERDICT_THRESHOLD:
+            final_verdict = "SUPPORTED"
+        elif raw_score < -VERDICT_THRESHOLD:
+            final_verdict = "CONTRADICTED"
+        else:
+            final_verdict = "MIXED"
+        print(f"   raw_score={raw_score:+.2f} → {final_verdict} ({final_score:.1f}%)")
+    
+    return {
+        "support_mass": round(support_mass, 4),
+        "refute_mass": round(refute_mass, 4),
+        "neutral_mass": round(neutral_mass, 4),
+        "decisive_mass": round(decisive_mass, 4),
+        "raw_score": round(raw_score, 4),
+        "final_verdict": final_verdict,
+        "final_accuracy_score": final_score,
+    }
+
+
+def orchestrate_analysis(text, previous_text=None, topic="ai"):
+    """Combines Fact Checking + Relevance Evaluation."""
+    print(f"\n📢 ORCHESTRATOR: Analyzing for Topic [{topic.upper()}]...")
+    
+    facts = search(topic, text, k=3)
+    llm_fact = verify_claim_with_llm(text, facts)
+    math_fact = calculate_mathematical_score(llm_fact, facts)
+    
+    relevance_res = relevance.compute_relevance_score(text, previous_text, topic)
+    
+    return {
+        "fact_verdict": math_fact['final_verdict'],
+        "fact_confidence": int(round(
+            sum(c['confidence'] for c in llm_fact['per_chunk']) /
+            max(1, len(llm_fact['per_chunk'])) * 100
+        )),
+        "fact_explanation": llm_fact.get("global_explanation", ""),
+        "fact_score": math_fact['final_accuracy_score'],
+        "support_mass": math_fact['support_mass'],
+        "refute_mass": math_fact['refute_mass'],
+        "neutral_mass": math_fact['neutral_mass'],
+        "per_chunk_verdicts": llm_fact['per_chunk'],
+        "relevance_score": relevance_res['final_score'],
+        "relevance_category": relevance_res['discourse_category'],
+        "relevance_reason": relevance_res['discourse_reason'],
+        "topic_similarity": relevance_res.get('topic_similarity', 0.0),
+        "evidence": facts
+    }
+
+
+if __name__ == "__main__":
+    topic = "ai"
+    prev_arg = "Artificial intelligence poses no threat to job security."
+    curr_resp = "AI tools will automate repetitive tasks and eliminate positions."
+    
+    result = orchestrate_analysis(curr_resp, prev_arg, topic)
+    
+    print("\n" + "="*30)
+    print("🎯 FINAL REPORT:")
+    print(f"Fact Score: {result['fact_score']}% ({result['fact_verdict']})")
+    print(f"Relevance:  {result['relevance_score']}% ({result['relevance_category']})")
+    print("="*30)
+==================================================
+FILE: ./search_engine/relevance.py
+==================================================
+import os
+import numpy as np
+import json
+import sys
+from sentence_transformers import SentenceTransformer
+from google import genai
+from google.genai import types
+
+# Add parent directory to path to find config
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from dotenv import load_dotenv
+
+# --- CONFIGURATION ---
+load_dotenv()
+GEMINI_API_KEY = os.getenv("API_KEY")
+
+if not GEMINI_API_KEY:
+    raise ValueError("❌ API_KEY not found in .env file!")
+
+# 1. Initialize Modern Gemini Client
+client = genai.Client(api_key=GEMINI_API_KEY)
+VERIFIER_MODEL = "gemini-3.1-flash-lite"
+
+# 2. Initialize BAAI Local Embedding Model
+print("📥 Loading BAAI/bge-small-en-v1.5 in Relevance Module...")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+def get_embedding(text):
+    """Generates a single vector using the local BAAI model."""
+    if not text:
+        return np.zeros(384) # Updated from 768 to 384
+        
+    try:
+        # Encode locally, returning a 384-dimensional array
+        result = embedding_model.encode([text], normalize_embeddings=True)
+        return result[0]
+    except Exception as e:
+        print(f"⚠️ Embedding Error in Relevance: {e}")
+        return np.zeros(384)
+
+def cosine_similarity(vec_a, vec_b):
+    """Math helper for vector similarity."""
+    dot_product = np.dot(vec_a, vec_b)
+    norm_a = np.linalg.norm(vec_a)
+    norm_b = np.linalg.norm(vec_b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+def check_discourse_logic(current_text, previous_text):
+    """
+    Uses LLM to classify the logical relationship between two arguments.
+    (Updated to the new google.genai SDK)
+    """
+    if not previous_text:
+        return "OPENING_STATEMENT", 1.0, "This is the first statement in the context."
+
+    prompt = f"""
+    TASK: Analyze the debate logic between the PREVIOUS_ARGUMENT and the CURRENT_RESPONSE.
+
+    PREVIOUS_ARGUMENT: "{previous_text}"
+    CURRENT_RESPONSE: "{current_text}"
+
+    INSTRUCTIONS:
+    Classify the CURRENT_RESPONSE into exactly one category:
+    1. DIRECT_COUNTER (Score 1.0): Directly refutes, challenges, or offers a counter-point.
+    2. ELABORATION (Score 0.7): Agrees, expands, adds examples, or asks a relevant question.
+    3. TANGENTIAL (Score 0.2): Mentions related keywords but ignores the specific point.
+    4. IRRELEVANT (Score 0.0): Completely unrelated topic.
+
+    OUTPUT JSON ONLY:
+    {{
+        "category": "DIRECT_COUNTER" | "ELABORATION" | "TANGENTIAL" | "IRRELEVANT",
+        "reason": "<short explanation>"
+    }}
+    """
+
+    try:
+        response = client.models.generate_content(
+            model=VERIFIER_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            )
+        )
+        data = json.loads(response.text)
+        category = data.get("category", "TANGENTIAL")
+        reason = data.get("reason", "No reason provided")
+        
+        weights = {
+            "DIRECT_COUNTER": 1.0,
+            "ELABORATION": 0.7,
+            "TANGENTIAL": 0.2,
+            "IRRELEVANT": 0.0
+        }
+        score = weights.get(category, 0.0)
+        
+        return category, score, reason
+
+    except Exception as e:
+        print(f"⚠️ Discourse Logic Error: {e}")
+        return "ERROR", 0.0, "LLM failed to analyze logic."
+
+def compute_relevance_score(current_text, previous_text, topic):
+    """
+    Main entry point for Relevance Engine.
+    Combines Global Topic Similarity (30%) + Local Discourse Logic (70%).
+    """
+    print(f"🔗 RELEVANCE ENGINE: Analyzing '{current_text[:20]}...' against Topic '{topic}'")
+
+    # 1. Global Topic Relevance (Vector Sim)
+    vec_topic = get_embedding(topic)
+    vec_current = get_embedding(current_text)
+    topic_sim = cosine_similarity(vec_topic, vec_current)
+    
+    # 2. Local Discourse Logic (LLM Classifier)
+    category, logic_score, reason = check_discourse_logic(current_text, previous_text)
+    
+    # 3. Topic-similarity floor
+    TOPIC_SIM_FLOOR = 0.35
+    if topic_sim < TOPIC_SIM_FLOOR and category in ("DIRECT_COUNTER", "ELABORATION"):
+        attenuation = topic_sim / TOPIC_SIM_FLOOR
+        logic_score = logic_score * attenuation
+        reason = f"[topic floor applied; sim={topic_sim:.2f}<{TOPIC_SIM_FLOOR}] " + reason
+    
+    # 4. Weighted Aggregation
+    final_score = (topic_sim * 0.3) + (logic_score * 0.7)
+    
+    return {
+        "final_score": round(final_score * 100, 2), # 0-100
+        "topic_similarity": round(topic_sim, 2),
+        "discourse_category": category,
+        "discourse_reason": reason
+    }
+==================================================
+FILE: ./config.py
+==================================================
+# --- TOPIC REGISTRY ---
+TOPIC_REGISTRY = {
+    # EXISTING
+    "ai": {
+        "db_config": {
+            "dbname": "debate_app_ai_db",
+            "user": "postgres",
+            "password": "root",
+            "host": "localhost"
+        },
+        "categories": [
+            "Category:Artificial_intelligence_controversies",
+            "Category:Ethics_of_artificial_intelligence",
+            "Category:Existential_risk_from_artificial_intelligence",
+            "Category:Regulation_of_artificial_intelligence",
+            "Category:Generative_artificial_intelligence"
+        ]
+    },
+
+    # NEW
+    "aadhaar": {
+        "db_config": {
+            "dbname": "debate_app_aadhaar_db",  
+            "user": "postgres",
+            "password": "root",
+            "host": "localhost"
+        },
+        "categories": [
+            # Main Identity Category (Contains Aadhaar articles)
+            "Category:Identity documents of India", 
+            
+            # The Tech & Gov Initiatives
+            "Category:Digital India initiatives",
+            "Category:Biometrics",
+            
+            # Legal & Rights (Crucial for debate)
+            "Category:Privacy in India",
+            "Category:Human rights in India",
+            "Category:Supreme_Court_of_India_cases",
+            "Category:Censorship in India"
+        ]
+    }
+}
+
+# --- GLOBAL SETTINGS ---
+# Scraper Settings 
+MAX_DEPTH = 2  # How deep to go into subcategories (0 = top level only)
+USER_AGENT = 'DebateAnalyzer_Bot/1.0 (contact: netajibosethesudip@gmail.com)'
+==================================================
+FILE: ./database/operations.py
+==================================================
+# database/operations.py
+import psycopg2
+from config import TOPIC_REGISTRY
+
+def get_connection(topic):
+    """
+    Establishes connection to the SPECIFIC database for the given topic.
+    """
+    if topic not in TOPIC_REGISTRY:
+        raise ValueError(f"❌ Unknown topic: {topic}")
+
+    # Load specific DB config for this topic
+    db_config = TOPIC_REGISTRY[topic]["db_config"]
+    
+    try:
+        conn = psycopg2.connect(**db_config)
+        return conn
+    except Exception as e:
+        print(f"❌ Database Connection Error ({topic}): {e}")
+        raise e
+
+def init_db(topic):
+    """Creates the table in the specific topic's database."""
+    create_table_sql = """
+    CREATE TABLE IF NOT EXISTS raw_facts (
+        pageid INTEGER PRIMARY KEY,
+        title TEXT UNIQUE,
+        url TEXT,
+        content TEXT,
+        categories TEXT,
+        source TEXT DEFAULT 'wikipedia',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    conn = get_connection(topic)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(create_table_sql)
+        conn.commit()
+        print(f"✅ Database initialized for '{topic}' (Table 'raw_facts' ready).")
+    except Exception as e:
+        print(f"❌ Error creating table for '{topic}': {e}")
+    finally:
+        conn.close()
+
+def page_exists(topic, pageid):
+    """Checks if a page ID already exists in the specific topic DB."""
+    conn = get_connection(topic)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM raw_facts WHERE pageid = %s", (pageid,))
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+def save_page(topic, page_data):
+    """
+    Saves a page to the specific topic's database.
+    """
+    sql = """
+    INSERT INTO raw_facts (pageid, title, url, content, categories)
+    VALUES (%s, %s, %s, %s, %s)
+    ON CONFLICT (pageid) DO NOTHING;
+    """
+    
+    conn = get_connection(topic)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (
+                page_data['pageid'],
+                page_data['title'],
+                page_data['url'],
+                page_data['content'],
+                str(page_data['categories'])
+            ))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"⚠️ DB Error saving '{page_data['title']}' to '{topic}': {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+==================================================
+FILE: ./evaluation/run_eval.py
+==================================================
+"""
+Evaluation runner for the debate fact-and-relevance checker.
+
+Usage:
+    # Full eval (both topics, fact + relevance)
+    python evaluation/run_eval.py
+
+    # Only one topic
+    python evaluation/run_eval.py --topic ai
+
+    # Only relevance examples
+    python evaluation/run_eval.py --mode relevance
+
+    # Limit how many examples to run (smoke test)
+    python evaluation/run_eval.py --limit 5
+
+Outputs:
+    - Console summary (accuracy, per-class precision/recall, confusion matrix)
+    - evaluation/results_<timestamp>.json (per-example diagnostics)
+"""
+import argparse
+import json
+import os
+import sys
+import time
+from collections import defaultdict
+from datetime import datetime
+
+# Make project root importable
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, ROOT)
+
+from search_engine import core
+from search_engine import relevance
+
+
+# ---------------------------------------------------------------------------
+# Metric helpers
+# ---------------------------------------------------------------------------
+
+def confusion_matrix(pairs, labels):
+    """Build a confusion matrix from (gold, pred) pairs."""
+    matrix = {g: {p: 0 for p in labels} for g in labels}
+    for gold, pred in pairs:
+        if gold in matrix and pred in matrix[gold]:
+            matrix[gold][pred] += 1
+    return matrix
+
+
+def per_class_metrics(pairs, labels):
+    """Returns precision, recall, f1, and support for each label."""
+    out = {}
+    for label in labels:
+        tp = sum(1 for g, p in pairs if g == label and p == label)
+        fp = sum(1 for g, p in pairs if g != label and p == label)
+        fn = sum(1 for g, p in pairs if g == label and p != label)
+        support = sum(1 for g, _ in pairs if g == label)
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+        out[label] = {
+            "precision": round(precision, 3),
+            "recall": round(recall, 3),
+            "f1": round(f1, 3),
+            "support": support,
+        }
+    return out
+
+
+def print_confusion_matrix(matrix, labels):
+    """Pretty-print the confusion matrix."""
+    col_w = max(14, max(len(l) for l in labels) + 2)
+    header = "GOLD \\ PRED".ljust(col_w) + "".join(l.ljust(col_w) for l in labels)
+    print(header)
+    print("-" * len(header))
+    for gold in labels:
+        row = gold.ljust(col_w) + "".join(str(matrix[gold][p]).ljust(col_w) for p in labels)
+        print(row)
+
+
+# ---------------------------------------------------------------------------
+# Fact-check eval
+# ---------------------------------------------------------------------------
+
+# How we map the system's verdict labels to the gold labels in the dataset.
+# The system can output: SUPPORTED, CONTRADICTED, MIXED, NOT_VERIFIABLE.
+# Gold labels: SUPPORTED, CONTRADICTED, NOT_VERIFIABLE.
+# Mapping rule: MIXED counts as NOT_VERIFIABLE for grading (the system is
+# saying "evidence is split"), which is closer to abstention than to a
+# confident SUPPORTED/CONTRADICTED.
+def normalize_predicted_verdict(pred):
+    if pred == "MIXED":
+        return "NOT_VERIFIABLE"
+    return pred
+
+
+def run_fact_eval(examples, topic_filter=None, limit=None):
+    """Run fact-check evaluation. Returns (per_example_results, summary)."""
+    results = []
+    pairs = []  # (gold, pred) for metric computation
+    score_diffs = []  # |predicted_score - expected_score| for MAE
+    
+    # Expected score per gold label for MAE: SUPPORTED→100, CONTRADICTED→0,
+    # NOT_VERIFIABLE→50.
+    EXPECTED_SCORE = {"SUPPORTED": 100.0, "CONTRADICTED": 0.0, "NOT_VERIFIABLE": 50.0}
+    
+    filtered = [
+        ex for ex in examples
+        if topic_filter is None or ex["topic"] == topic_filter
+    ]
+    if limit:
+        filtered = filtered[:limit]
+    
+    print(f"\n{'='*60}")
+    print(f"FACT-CHECK EVAL: {len(filtered)} examples")
+    print(f"{'='*60}")
+    
+    for i, ex in enumerate(filtered, 1):
+        print(f"\n[{i}/{len(filtered)}] {ex['id']} ({ex['topic']}): {ex['claim'][:60]}...")
+        gold = ex["expected_verdict"]
+        
+        try:
+            t0 = time.time()
+            result = core.orchestrate_analysis(
+                text=ex["claim"],
+                previous_text=None,
+                topic=ex["topic"],
+            )
+            elapsed = time.time() - t0
+            
+            pred_raw = result["fact_verdict"]
+            pred = normalize_predicted_verdict(pred_raw)
+            score = result["fact_score"]
+            
+            correct = (pred == gold)
+            score_diff = abs(score - EXPECTED_SCORE[gold])
+            
+            pairs.append((gold, pred))
+            score_diffs.append(score_diff)
+            
+            results.append({
+                "id": ex["id"],
+                "topic": ex["topic"],
+                "claim": ex["claim"],
+                "gold_verdict": gold,
+                "pred_verdict_raw": pred_raw,
+                "pred_verdict": pred,
+                "correct": correct,
+                "score": score,
+                "expected_score": EXPECTED_SCORE[gold],
+                "score_abs_error": round(score_diff, 2),
+                "explanation": result["fact_explanation"],
+                "support_mass": result["support_mass"],
+                "refute_mass": result["refute_mass"],
+                "neutral_mass": result["neutral_mass"],
+                "elapsed_sec": round(elapsed, 2),
+            })
+            
+            mark = "✅" if correct else "❌"
+            print(f"   {mark} gold={gold} pred={pred_raw} score={score:.1f} (Δ={score_diff:.1f}) [{elapsed:.1f}s]")
+            
+            # Be polite to the API
+            time.sleep(0.5)
+        
+        except FileNotFoundError as e:
+            print(f"   ⚠️  Brain not built for topic '{ex['topic']}'. Skipping. ({e})")
+            continue
+        except Exception as e:
+            print(f"   ❌ ERROR: {e}")
+            results.append({
+                "id": ex["id"], "topic": ex["topic"], "claim": ex["claim"],
+                "gold_verdict": gold, "error": str(e),
+            })
+            continue
+    
+    # Compute summary metrics
+    if not pairs:
+        return results, {"note": "no successful runs"}
+    
+    labels = ["SUPPORTED", "CONTRADICTED", "NOT_VERIFIABLE"]
+    accuracy = sum(1 for g, p in pairs if g == p) / len(pairs)
+    metrics = per_class_metrics(pairs, labels)
+    matrix = confusion_matrix(pairs, labels)
+    mae = sum(score_diffs) / len(score_diffs)
+    
+    summary = {
+        "n_examples": len(pairs),
+        "accuracy": round(accuracy, 3),
+        "score_mae": round(mae, 2),
+        "per_class": metrics,
+        "confusion_matrix": matrix,
+    }
+    
+    print(f"\n{'='*60}")
+    print(f"FACT-CHECK SUMMARY ({len(pairs)} examples)")
+    print(f"{'='*60}")
+    print(f"Accuracy: {accuracy:.1%}")
+    print(f"Score MAE: {mae:.1f} (lower is better, scale 0-100)")
+    print(f"\nPer-class metrics:")
+    for label, m in metrics.items():
+        print(f"  {label.ljust(15)} P={m['precision']:.2f}  R={m['recall']:.2f}  F1={m['f1']:.2f}  (n={m['support']})")
+    print(f"\nConfusion Matrix:")
+    print_confusion_matrix(matrix, labels)
+    
+    return results, summary
+
+
+# ---------------------------------------------------------------------------
+# Relevance eval
+# ---------------------------------------------------------------------------
+
+def run_relevance_eval(examples, limit=None):
+    """Run relevance/discourse classification eval."""
+    results = []
+    pairs = []
+    
+    if limit:
+        examples = examples[:limit]
+    
+    print(f"\n{'='*60}")
+    print(f"RELEVANCE EVAL: {len(examples)} examples")
+    print(f"{'='*60}")
+    
+    for i, ex in enumerate(examples, 1):
+        print(f"\n[{i}/{len(examples)}] {ex['id']}: '{ex['current_text'][:50]}...'")
+        gold = ex["expected_category"]
+        
+        try:
+            res = relevance.compute_relevance_score(
+                current_text=ex["current_text"],
+                previous_text=ex["previous_text"],
+                topic=ex["topic"],
+            )
+            pred = res["discourse_category"]
+            correct = (pred == gold)
+            pairs.append((gold, pred))
+            
+            results.append({
+                "id": ex["id"],
+                "topic": ex["topic"],
+                "previous_text": ex["previous_text"],
+                "current_text": ex["current_text"],
+                "gold_category": gold,
+                "pred_category": pred,
+                "correct": correct,
+                "final_score": res["final_score"],
+                "topic_similarity": res["topic_similarity"],
+                "reason": res["discourse_reason"],
+            })
+            
+            mark = "✅" if correct else "❌"
+            print(f"   {mark} gold={gold} pred={pred} score={res['final_score']:.1f}")
+            time.sleep(0.5)
+        
+        except Exception as e:
+            print(f"   ❌ ERROR: {e}")
+            continue
+    
+    if not pairs:
+        return results, {"note": "no successful runs"}
+    
+    labels = ["DIRECT_COUNTER", "ELABORATION", "TANGENTIAL", "IRRELEVANT"]
+    accuracy = sum(1 for g, p in pairs if g == p) / len(pairs)
+    metrics = per_class_metrics(pairs, labels)
+    matrix = confusion_matrix(pairs, labels)
+    
+    summary = {
+        "n_examples": len(pairs),
+        "accuracy": round(accuracy, 3),
+        "per_class": metrics,
+        "confusion_matrix": matrix,
+    }
+    
+    print(f"\n{'='*60}")
+    print(f"RELEVANCE SUMMARY ({len(pairs)} examples)")
+    print(f"{'='*60}")
+    print(f"Accuracy: {accuracy:.1%}")
+    print(f"\nPer-class metrics:")
+    for label, m in metrics.items():
+        print(f"  {label.ljust(18)} P={m['precision']:.2f}  R={m['recall']:.2f}  F1={m['f1']:.2f}  (n={m['support']})")
+    print(f"\nConfusion Matrix:")
+    print_confusion_matrix(matrix, labels)
+    
+    return results, summary
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Run evaluation on the debate proctor.")
+    parser.add_argument("--topic", choices=["ai", "aadhaar"], default=None,
+                        help="Restrict to one topic (default: all)")
+    parser.add_argument("--mode", choices=["fact", "relevance", "both"], default="both",
+                        help="Which eval to run (default: both)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Cap number of examples (smoke test)")
+    parser.add_argument("--dataset", default=os.path.join(os.path.dirname(__file__), "dataset.json"),
+                        help="Path to dataset JSON")
+    args = parser.parse_args()
+    
+    with open(args.dataset, "r", encoding="utf-8") as f:
+        dataset = json.load(f)
+    
+    output = {
+        "run_at": datetime.utcnow().isoformat() + "Z",
+        "args": vars(args),
+    }
+    
+    if args.mode in ("fact", "both"):
+        fact_results, fact_summary = run_fact_eval(
+            dataset["examples"], topic_filter=args.topic, limit=args.limit
+        )
+        output["fact_check"] = {"summary": fact_summary, "examples": fact_results}
+    
+    if args.mode in ("relevance", "both"):
+        rel_results, rel_summary = run_relevance_eval(
+            dataset["relevance_examples"], limit=args.limit
+        )
+        output["relevance"] = {"summary": rel_summary, "examples": rel_results}
+    
+    # Save full results
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(os.path.dirname(__file__), f"results_{timestamp}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n💾 Full results saved to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+==================================================
+FILE: ./scraper/crawler.py
+==================================================
+import wikipediaapi
+from config import USER_AGENT, MAX_DEPTH
+
+# Initialize the API wrapper
+wiki_wiki = wikipediaapi.Wikipedia(
+    user_agent=USER_AGENT,
+    language='en'
+)
+
+def extract_page_data(page_obj):
+    """Converts a Wiki Page Object into a clean dictionary."""
+    return {
+        "pageid": page_obj.pageid,
+        "title": page_obj.title,
+        "url": page_obj.fullurl,
+        "content": page_obj.text, # Takes full text
+        "categories": list(page_obj.categories.keys())
+    }
+
+def fetch_category_pages(category_name, level=0, _seen_pageids=None, _seen_categories=None):
+    """
+    Generator that yields page data from a category.
+    Handles recursion based on MAX_DEPTH.
+    
+    De-duplicates pages and categories within a single run so a page that
+    lives in multiple categories is only fetched once, and a category cycle
+    cannot cause infinite recursion.
+    """
+    # Initialize the run-scoped dedup sets on the top-level call.
+    # Recursive calls pass them through.
+    if _seen_pageids is None:
+        _seen_pageids = set()
+    if _seen_categories is None:
+        _seen_categories = set()
+    
+    # Skip categories we've already scanned in this run (cycle guard)
+    if category_name in _seen_categories:
+        return
+    _seen_categories.add(category_name)
+    
+    cat_page = wiki_wiki.page(category_name)
+    
+    if not cat_page.exists():
+        print(f"   ⚠️ Category '{category_name}' not found.")
+        return
+
+    print(f"📂 Scanning Category: {category_name} (Level {level})")
+
+    for member in cat_page.categorymembers.values():
+        
+        # Case 1: It's an Article
+        if member.ns == wikipediaapi.Namespace.MAIN:
+            # Skip if we've already yielded this page in this run
+            if member.pageid in _seen_pageids:
+                continue
+            _seen_pageids.add(member.pageid)
+            yield extract_page_data(member)
+        
+        # Case 2: It's a Subcategory (Recursion)
+        elif member.ns == wikipediaapi.Namespace.CATEGORY and level < MAX_DEPTH:
+            yield from fetch_category_pages(
+                member.title,
+                level + 1,
+                _seen_pageids=_seen_pageids,
+                _seen_categories=_seen_categories,
+            )
+
+==================================================
+FILE: ./vector_engine/build_index.py
+==================================================
+import sys
+import os
+import argparse 
+import time
+import re
+import pickle
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+# Ensure parent directory is in sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from database import operations as db
+from config import TOPIC_REGISTRY 
+
+# --- CONFIGURATION ---
+load_dotenv()
+
+print("📥 Loading BAAI/bge-small-en-v1.5 locally...")
+embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+VECTOR_DIMENSION = 384  # <-- Crucial change: BAAI uses 384 dimensions
+
+# Chunking Settings
+CHUNK_SIZE = 800
+OVERLAP = 100
+CHECKPOINT_INTERVAL = 50  # Auto-save every 50 articles
+
+# --- Sentence boundary detection (Kept exactly as you wrote it) ---
+_ABBREVIATIONS = {
+    'Mr', 'Mrs', 'Ms', 'Dr', 'Jr', 'Sr', 'St', 'Prof', 'Hon',
+    'vs', 'etc', 'eg', 'ie', 'cf',
+    'U.S', 'U.K', 'U.N', 'E.U',
+    'e.g', 'i.e', 'a.m', 'p.m',
+    'Inc', 'Ltd', 'Co', 'Corp', 'Capt', 'Gen', 'Lt', 'Sgt',
+    'No', 'vol', 'pp', 'p',
+}
+
+_SPLIT_RE = re.compile(r'([.!?])\s+(?=[A-Z"\'(])')
+
+def _split_sentences(text):
+    if not text:
+        return []
+    parts = _SPLIT_RE.split(text)
+    if len(parts) == 1:
+        return [text.strip()] if text.strip() else []
+
+    candidates = []
+    i = 0
+    while i < len(parts):
+        if i + 1 < len(parts):
+            candidates.append(parts[i] + parts[i + 1])
+            i += 2
+        else:
+            candidates.append(parts[i])
+            i += 1
+
+    merged = []
+    for cand in candidates:
+        if merged:
+            prev = merged[-1].rstrip()
+            stripped = prev.rstrip('.!?')
+            last_token = stripped.split()[-1] if stripped.split() else ''
+            if last_token in _ABBREVIATIONS:
+                merged[-1] = prev + ' ' + cand.lstrip()
+                continue
+        merged.append(cand)
+
+    return [s.strip() for s in merged if s.strip()]
+
+def _hard_split(text, chunk_size):
+    chunks = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + chunk_size, n)
+        if end < n:
+            ws = text.rfind(' ', max(start, end - 100), end)
+            if ws > start:
+                end = ws
+        chunks.append(text[start:end].strip())
+        start = end
+    return [c for c in chunks if c]
+
+def paragraph_aware_chunker(text, chunk_size=CHUNK_SIZE, sentence_overlap=2):
+    if not text:
+        return []
+
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+    chunks = []
+
+    for para in paragraphs:
+        if len(para) <= chunk_size:
+            chunks.append(para)
+            continue
+
+        sentences = _split_sentences(para)
+        if not sentences:
+            sentences = [para]
+
+        current = []
+        current_len = 0
+        for sent in sentences:
+            if len(sent) > chunk_size:
+                if current:
+                    chunks.append(' '.join(current))
+                    current, current_len = [], 0
+                chunks.extend(_hard_split(sent, chunk_size))
+                continue
+
+            projected = current_len + len(sent) + (1 if current else 0)
+            if projected > chunk_size and current:
+                chunks.append(' '.join(current))
+                tail = current[-sentence_overlap:] if sentence_overlap > 0 else []
+                current = list(tail)
+                current_len = sum(len(s) for s in current) + max(0, len(current) - 1)
+
+            current.append(sent)
+            current_len += len(sent) + (1 if len(current) > 1 else 0)
+
+        if current:
+            chunks.append(' '.join(current))
+
+    return [c for c in chunks if c and len(c.strip()) > 10]
+
+def get_batch_embeddings(text_chunks):
+    """
+    Simplified embedding function. BAAI runs locally, so no API limits!
+    """
+    if not text_chunks:
+        return [], []
+    
+    try:
+        # Encode locally! normalize_embeddings is crucial for cosine similarity
+        vectors = embedding_model.encode(text_chunks, normalize_embeddings=True)
+        return text_chunks, vectors.tolist()
+    except Exception as e:
+        print(f"⚠️ Local Embedding Error: {e}")
+        return [], []
+
+def save_checkpoint(index, metadata_list, output_dir):
+    index_path = os.path.join(output_dir, "vector_store.index")
+    meta_path = os.path.join(output_dir, "metadata.pkl")
+    
+    faiss.write_index(index, index_path)
+    
+    with open(meta_path, "wb") as f:
+        pickle.dump(metadata_list, f)
+    print(f"   💾 Checkpoint saved! ({len(metadata_list)} total memories)")
+
+def build_index():
+    parser = argparse.ArgumentParser(description="Build Vector Index for a specific topic.")
+    parser.add_argument("--topic", type=str, required=True, help="The topic key (e.g., 'ai', 'aadhaar')")
+    args = parser.parse_args()
+    topic = args.topic.lower()
+
+    if topic not in TOPIC_REGISTRY:
+        print(f"❌ Error: Topic '{topic}' not found in config.")
+        return
+
+    print(f"🚀 Starting Phase 2: Building Brain for [{topic.upper()}]...")
+    
+    output_dir = os.path.join("data", topic)
+    os.makedirs(output_dir, exist_ok=True)
+    index_path = os.path.join(output_dir, "vector_store.index")
+    meta_path = os.path.join(output_dir, "metadata.pkl")
+
+    metadata_list = []
+    existing_titles = set()
+    
+    # --- IMPORTANT ---
+    # Since you changed from 3072/768 to 384 dimensions, you cannot load an old index.
+    # If an old index exists, you should delete the `data/ai/` folder first, 
+    # but the script will handle fresh creation if it fails to load.
+    
+    if os.path.exists(index_path) and os.path.exists(meta_path):
+        print("🧠 Found existing brain. Loading for incremental update...")
+        try:
+            index = faiss.read_index(index_path)
+            # Failsafe: check dimension match
+            if index.d != VECTOR_DIMENSION:
+                print(f"⚠️ Dimension mismatch! Index is {index.d} but model is {VECTOR_DIMENSION}. Creating fresh index.")
+                index = faiss.IndexFlatL2(VECTOR_DIMENSION)
+            else:
+                with open(meta_path, "rb") as f:
+                    metadata_list = pickle.load(f)
+                existing_titles = {item['title'] for item in metadata_list}
+                print(f"   ✅ Loaded {len(metadata_list)} existing memories ({len(existing_titles)} unique articles).")
+        except Exception as e:
+            print(f"   ⚠️ Error loading existing index: {e}. Starting fresh.")
+            index = faiss.IndexFlatL2(VECTOR_DIMENSION)
+    else:
+        print("🆕 No existing brain found. Creating fresh index.")
+        index = faiss.IndexFlatL2(VECTOR_DIMENSION)
+
+    print(f"📥 Fetching data from {TOPIC_REGISTRY[topic]['db_config']['dbname']}...")
+    conn = db.get_connection(topic)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT pageid, title, content, url FROM raw_facts")
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+    
+    new_rows = [r for r in rows if r[1] not in existing_titles]
+    
+    if not new_rows:
+        print("✨ Brain is already up to date! No new articles to embed.")
+        return
+
+    print(f"   Found {len(rows)} total articles. {len(new_rows)} are NEW. Processing...")
+
+    global_faiss_id = len(metadata_list)
+    new_vectors_buffer = [] 
+    
+    for idx, row in enumerate(new_rows):
+        page_id, title, content, url = row
+        
+        chunks = paragraph_aware_chunker(content)
+        if not chunks: continue
+
+        surviving_chunks, vectors = get_batch_embeddings(chunks)
+
+        if not vectors:
+            continue
+            
+        for i, vector in enumerate(vectors):
+            new_vectors_buffer.append(vector)
+            metadata_list.append({
+                "faiss_id": global_faiss_id,
+                "title": title,
+                "text": surviving_chunks[i],
+                "url": url
+            })
+            global_faiss_id += 1
+            
+        print(f"   [{idx+1}/{len(new_rows)}] Processed: {title} ({len(surviving_chunks)}/{len(chunks)} chunks embedded)")
+        
+        if (idx + 1) % CHECKPOINT_INTERVAL == 0 and new_vectors_buffer:
+            print(f"\n⚡ Auto-Saving batch of {len(new_vectors_buffer)} vectors...")
+            batch_matrix = np.array(new_vectors_buffer).astype('float32')
+            index.add(batch_matrix)
+            save_checkpoint(index, metadata_list, output_dir)
+            new_vectors_buffer = []
+            
+    if new_vectors_buffer:
+        print(f"\n⚡ Saving final batch of {len(new_vectors_buffer)} vectors...")
+        batch_matrix = np.array(new_vectors_buffer).astype('float32')
+        index.add(batch_matrix)
+        save_checkpoint(index, metadata_list, output_dir)
+            
+    print(f"✅ DONE! Brain updated. Total memories: {index.ntotal}")
+
+if __name__ == "__main__":
+    build_index()

@@ -1,0 +1,265 @@
+{
+  "version": "1.0",
+  "description": "Hand-labeled evaluation set for the debate fact-and-relevance checker. Labels are based on widely-established facts in each domain. Re-label or expand as needed.",
+  "label_definitions": {
+    "SUPPORTED": "The claim is factually accurate and the corpus should contain evidence affirming it.",
+    "CONTRADICTED": "The claim is factually wrong and the corpus should contain evidence refuting it.",
+    "NOT_VERIFIABLE": "The claim is opinion, off-topic, or the corpus lacks evidence either way. The system should abstain (~50%)."
+  },
+  "examples": [
+    {
+      "id": "ai-001",
+      "topic": "ai",
+      "claim": "GPT-3 was developed by OpenAI.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Well-documented, in any AI corpus."
+    },
+    {
+      "id": "ai-002",
+      "topic": "ai",
+      "claim": "GPT-3 was developed by Google DeepMind.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Opposite of the truth; corpus should refute."
+    },
+    {
+      "id": "ai-003",
+      "topic": "ai",
+      "claim": "The EU AI Act categorizes AI systems by risk level.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Core feature of the EU AI Act, covered in regulation-of-AI articles."
+    },
+    {
+      "id": "ai-004",
+      "topic": "ai",
+      "claim": "The EU AI Act bans all forms of artificial intelligence.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "It regulates risk tiers, does not ban AI broadly."
+    },
+    {
+      "id": "ai-005",
+      "topic": "ai",
+      "claim": "Stuart Russell has written about existential risk from AI.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Author of Human Compatible; covered in existential-risk articles."
+    },
+    {
+      "id": "ai-006",
+      "topic": "ai",
+      "claim": "Large language models like GPT-4 are completely free of bias.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Bias in LLMs is a well-documented research area; corpus should refute the absolute claim."
+    },
+    {
+      "id": "ai-007",
+      "topic": "ai",
+      "claim": "AI alignment research focuses on ensuring AI systems pursue human-intended goals.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Standard definition; should appear in AI safety articles."
+    },
+    {
+      "id": "ai-008",
+      "topic": "ai",
+      "claim": "The Tesla Autopilot system has never been involved in any fatal accident.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Multiple documented fatal crashes; corpus should refute."
+    },
+    {
+      "id": "ai-009",
+      "topic": "ai",
+      "claim": "Generative AI can produce images, text, and audio.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Definitional; in the generative-AI category articles."
+    },
+    {
+      "id": "ai-010",
+      "topic": "ai",
+      "claim": "Pizza tastes better with pineapple than without.",
+      "expected_verdict": "NOT_VERIFIABLE",
+      "rationale": "Pure opinion, off-topic. System should abstain or label as low-evidence."
+    },
+    {
+      "id": "ai-011",
+      "topic": "ai",
+      "claim": "I had cereal for breakfast this morning.",
+      "expected_verdict": "NOT_VERIFIABLE",
+      "rationale": "Personal claim, no corpus evidence either way."
+    },
+    {
+      "id": "ai-012",
+      "topic": "ai",
+      "claim": "Reinforcement learning from human feedback is used to align language models.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "RLHF is widely documented; should be in AI alignment articles."
+    },
+    {
+      "id": "ai-013",
+      "topic": "ai",
+      "claim": "Deepfakes have been used to create non-consensual fake content of real people.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Documented harm in AI controversies / ethics categories."
+    },
+    {
+      "id": "ai-014",
+      "topic": "ai",
+      "claim": "All AI systems are sentient and conscious.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "No mainstream sources support this; philosophy-of-AI articles refute."
+    },
+    {
+      "id": "ai-015",
+      "topic": "ai",
+      "claim": "The Turing Test was proposed by Alan Turing as a measure of machine intelligence.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Foundational, well-covered."
+    },
+
+    {
+      "id": "aadhaar-001",
+      "topic": "aadhaar",
+      "claim": "Aadhaar is a 12-digit unique identification number issued in India.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Definitional fact, in identity-documents-of-India category."
+    },
+    {
+      "id": "aadhaar-002",
+      "topic": "aadhaar",
+      "claim": "Aadhaar numbers are 16 digits long.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "They are 12 digits; corpus should refute."
+    },
+    {
+      "id": "aadhaar-003",
+      "topic": "aadhaar",
+      "claim": "Aadhaar is administered by the Unique Identification Authority of India.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "UIDAI is the issuing authority, well-documented."
+    },
+    {
+      "id": "aadhaar-004",
+      "topic": "aadhaar",
+      "claim": "The Aadhaar program collects biometric data including fingerprints and iris scans.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Core technical fact of Aadhaar, in biometrics category."
+    },
+    {
+      "id": "aadhaar-005",
+      "topic": "aadhaar",
+      "claim": "The Supreme Court of India ruled in Puttaswamy that privacy is a fundamental right.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Landmark 2017 ruling, in Supreme-Court-of-India-cases category."
+    },
+    {
+      "id": "aadhaar-006",
+      "topic": "aadhaar",
+      "claim": "Aadhaar enrollment is illegal in India.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Plainly false; Aadhaar is a government program."
+    },
+    {
+      "id": "aadhaar-007",
+      "topic": "aadhaar",
+      "claim": "Aadhaar has been used for direct benefit transfer of subsidies.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "DBT linkage to Aadhaar is documented in Digital India articles."
+    },
+    {
+      "id": "aadhaar-008",
+      "topic": "aadhaar",
+      "claim": "The 2018 Supreme Court ruling struck down all use of Aadhaar entirely.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Court upheld Aadhaar with restrictions on private-sector use; did not strike it down."
+    },
+    {
+      "id": "aadhaar-009",
+      "topic": "aadhaar",
+      "claim": "Aadhaar has faced criticism over data privacy and surveillance concerns.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "Extensively covered in privacy-in-India and human-rights articles."
+    },
+    {
+      "id": "aadhaar-010",
+      "topic": "aadhaar",
+      "claim": "Aadhaar is the same system as the US Social Security Number.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Different systems with different scopes and architectures."
+    },
+    {
+      "id": "aadhaar-011",
+      "topic": "aadhaar",
+      "claim": "The capital of France is Paris.",
+      "expected_verdict": "NOT_VERIFIABLE",
+      "rationale": "Off-topic for Aadhaar corpus; system should abstain."
+    },
+    {
+      "id": "aadhaar-012",
+      "topic": "aadhaar",
+      "claim": "I think the Aadhaar logo looks pretty.",
+      "expected_verdict": "NOT_VERIFIABLE",
+      "rationale": "Opinion; no factual claim to verify."
+    },
+    {
+      "id": "aadhaar-013",
+      "topic": "aadhaar",
+      "claim": "Aadhaar data has never been involved in any reported leak or breach incident.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Multiple documented breach incidents reported; corpus should refute."
+    },
+    {
+      "id": "aadhaar-014",
+      "topic": "aadhaar",
+      "claim": "The Aadhaar Act was passed by the Indian Parliament.",
+      "expected_verdict": "SUPPORTED",
+      "rationale": "The Aadhaar Act 2016, well-documented."
+    },
+    {
+      "id": "aadhaar-015",
+      "topic": "aadhaar",
+      "claim": "Every Aadhaar number is publicly displayed on a government website.",
+      "expected_verdict": "CONTRADICTED",
+      "rationale": "Aadhaar numbers are protected; not publicly listed."
+    }
+  ],
+
+  "relevance_examples": [
+    {
+      "id": "rel-001",
+      "topic": "ai",
+      "previous_text": "Large language models often hallucinate facts.",
+      "current_text": "That's true, but newer retrieval-augmented systems significantly reduce hallucination.",
+      "expected_category": "DIRECT_COUNTER",
+      "rationale": "On-topic, directly engages the previous claim."
+    },
+    {
+      "id": "rel-002",
+      "topic": "ai",
+      "previous_text": "Large language models often hallucinate facts.",
+      "current_text": "Yes, and one common cause is the model trying to be helpful even when it lacks knowledge.",
+      "expected_category": "ELABORATION",
+      "rationale": "Agrees and extends with a related cause."
+    },
+    {
+      "id": "rel-003",
+      "topic": "ai",
+      "previous_text": "Large language models often hallucinate facts.",
+      "current_text": "I had pasta for dinner last night, it was great.",
+      "expected_category": "IRRELEVANT",
+      "rationale": "Completely off-topic, no engagement at all."
+    },
+    {
+      "id": "rel-004",
+      "topic": "aadhaar",
+      "previous_text": "Aadhaar enables efficient delivery of welfare benefits.",
+      "current_text": "But this efficiency comes at the cost of mass surveillance over citizens.",
+      "expected_category": "DIRECT_COUNTER",
+      "rationale": "On-topic, direct counterpoint."
+    },
+    {
+      "id": "rel-005",
+      "topic": "aadhaar",
+      "previous_text": "Aadhaar enables efficient delivery of welfare benefits.",
+      "current_text": "The weather in Mumbai is quite humid in monsoon season.",
+      "expected_category": "IRRELEVANT",
+      "rationale": "Off-topic, no engagement."
+    }
+  ]
+}

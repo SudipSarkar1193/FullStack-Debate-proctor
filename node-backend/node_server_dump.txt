@@ -1,0 +1,282 @@
+================ package.json ================
+{
+  "name": "debate-proctor-backend",
+  "version": "1.0.0",
+  "description": "Node.js backend for Debate Proctor",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4",
+    "uuid": "^9.0.0"
+  }
+}
+
+==================================================
+FILE: ./server.js
+==================================================
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
+const fs = require("fs");
+const fsPromises = require("fs").promises;
+const path = require("path");
+
+const app = express();
+const server = http.createServer(app);
+
+// Point this to your FastAPI server
+const SERVER_URL = process.env.SERVER_URL || "http://127.0.0.1:8000"; 
+const PORT = process.env.PORT || 3001;
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || /^http:\/\/localhost(:\d+)?$/.test(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  methods: ["GET", "POST", "PUT"],
+};
+
+app.use(cors(corsOptions));
+app.use(express.json());
+
+const io = new Server(server, { cors: corsOptions });
+
+const DATA_FILE = path.join(__dirname, "debates_data.json");
+
+// --- Non-Blocking Persistence ---
+const debates = {};        
+const exchangeBuffers = {}; 
+
+async function saveData() {
+  try {
+    // Using promises ensures the event loop is never blocked by disk I/O
+    await fsPromises.writeFile(DATA_FILE, JSON.stringify({ debates }, null, 2));
+  } catch (err) {
+    console.error("Could not save data:", err.message);
+  }
+}
+
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      Object.assign(debates, data.debates || {});
+      console.log(`Loaded ${Object.keys(debates).length} persisted debate(s).`);
+    }
+  } catch (err) {
+    console.error("Could not load persisted data:", err.message);
+  }
+}
+
+loadData();
+
+// ---------------------------------------------------------------
+// REST ENDPOINTS
+// ---------------------------------------------------------------
+
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "Debate Proctor Gateway is running" });
+});
+
+app.post("/api/debates", async (req, res) => {
+  const { id, topic, debater1, position } = req.body;
+
+  if (!id || !topic || !debater1) {
+    return res.status(400).json({ error: "id, topic, and debater1 are required" });
+  }
+
+  const debate = {
+    id,
+    topic,
+    debater1: { id: debater1.id, username: debater1.username, position: position || "for" },
+    debater2: { id: "", username: "Waiting...", position: position === "for" ? "against" : "for" },
+    status: "pending",
+    currentRound: 1,
+    totalRounds: 3,
+    currentTurn: "debater1",
+    timeRemaining: 600,
+    startedAt: new Date().toISOString(),
+    messages: [],
+    scores: { debater1: 0, debater2: 0 },
+  };
+
+  debates[id] = debate;
+  saveData(); 
+  res.status(201).json(debate);
+});
+
+app.get("/api/debates/:id", (req, res) => {
+  const debate = debates[req.params.id];
+  if (!debate) return res.status(404).json({ error: "Debate not found" });
+  res.json(debate);
+});
+
+app.put("/api/debates/:id/join", (req, res) => {
+  const debate = debates[req.params.id];
+  if (!debate) return res.status(404).json({ error: "Debate not found" });
+  if (debate.debater2 && debate.debater2.id) {
+    return res.status(400).json({ error: "Debate already has two debaters" });
+  }
+
+  const { debater2 } = req.body;
+  const oppositePosition = debate.debater1.position === "for" ? "against" : "for";
+
+  debate.debater2 = { id: debater2.id, username: debater2.username, position: oppositePosition };
+  debate.status = "live";
+
+  debates[debate.id] = debate;
+  saveData();
+
+  io.to(debate.id).emit("debate-updated", debate);
+  res.json(debate);
+});
+
+// ---------------------------------------------------------------
+// SOCKET.IO (The Core Engine)
+// ---------------------------------------------------------------
+
+io.on("connection", (socket) => {
+  socket.on("join-debate", (debateId) => {
+    socket.join(debateId);
+  });
+
+  socket.on("sendMsg", async ({ debateId, message }) => {
+    let factCheckStatus = message.factCheckStatus || "unverified";
+    const debate = debates[debateId];
+    
+    // 1. Context Assembly: Grab the previous message for discourse logic
+    let previousText = null;
+    if (debate && debate.messages && debate.messages.length > 0) {
+      previousText = debate.messages[debate.messages.length - 1].message;
+    }
+
+    // Map React topic string to Python config registry key
+    let topicKey = "ai"; 
+    if (debate && debate.topic.title.toLowerCase().includes("aadhaar")) {
+      topicKey = "aadhaar";
+    }
+
+    // 2. The Python RAG/LLM Call (Stateless & Unified)
+    try {
+      const response = await fetch(`${SERVER_URL}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: message.message,
+          previous_text: previousText,
+          topic: topicKey
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Map Python strict output to React's shield icon states
+        if (data.verdict === "SUPPORTED" && data.factual_score >= 70) {
+          factCheckStatus = "verified";
+        } else if (data.verdict === "MIXED" || data.factual_score >= 40 || data.relevance_score >= 40) {
+          factCheckStatus = "questionable";
+        } else {
+          factCheckStatus = "unverified";
+        }
+
+        // Cache the raw mathematical output on the message object for the exchange scorer
+        message._aiData = {
+          factual_score: data.factual_score,
+          relevance_score: data.relevance_score,
+          reasoning: data.discourse_reason || data.explanation
+        };
+      }
+    } catch (err) {
+      console.log("FastAPI backend unavailable — falling back to unverified.", err.message);
+    }
+
+    // 3. Turn State Synchronization
+    let nextTurn = "debater2";
+    if (debate && message.debaterId === debate.debater2?.id) {
+      nextTurn = "debater1";
+    }
+
+    const broadcastMessage = { ...message, factCheckStatus, nextTurn };
+
+    if (debates[debateId]) {
+      debates[debateId].messages.push(broadcastMessage);
+      debates[debateId].currentTurn = nextTurn;
+      saveData();
+    }
+
+    io.to(debateId).emit("real-time-sync-message", broadcastMessage);
+
+    // 4. In-Memory Exchange Scoring 
+    if (debate && debate.debater2?.id) {
+      const isDebater1msg = message.debaterId === debate.debater1.id;
+      const senderPosition = isDebater1msg ? debate.debater1.position : debate.debater2.position;
+
+      if (!exchangeBuffers[debateId]) {
+        exchangeBuffers[debateId] = { forMessage: null, againstMessage: null };
+      }
+
+      if (senderPosition === "for") {
+        exchangeBuffers[debateId].forMessage = broadcastMessage;
+      } else {
+        exchangeBuffers[debateId].againstMessage = broadcastMessage;
+      }
+
+      const { forMessage, againstMessage } = exchangeBuffers[debateId];
+      
+      // If we have both sides, calculate the final exchange math natively in Node
+      if (forMessage && againstMessage) {
+        exchangeBuffers[debateId] = { forMessage: null, againstMessage: null }; // Reset buffer
+
+        const forAI = forMessage._aiData || { factual_score: 50, relevance_score: 50, reasoning: "Unverified" };
+        const againstAI = againstMessage._aiData || { factual_score: 50, relevance_score: 50, reasoning: "Unverified" };
+
+        // Scale Python's 100-point scale down to a 10-point scale, weighting Facts heavier than Relevance
+        const for_points = ((forAI.factual_score * 0.7) + (forAI.relevance_score * 0.3)) / 10;
+        const against_points = ((againstAI.factual_score * 0.7) + (againstAI.relevance_score * 0.3)) / 10;
+
+        let exchange_winner = "tie";
+        if (for_points > against_points + 0.5) exchange_winner = "for";
+        else if (against_points > for_points + 0.5) exchange_winner = "against";
+
+        // Map points back to debater slots
+        const forIsDebater1 = forMessage.debaterId === debate.debater1.id;
+        debates[debateId].scores = debates[debateId].scores || { debater1: 0, debater2: 0 };
+        
+        if (forIsDebater1) {
+          debates[debateId].scores.debater1 = Math.round((debates[debateId].scores.debater1 + for_points) * 10) / 10;
+          debates[debateId].scores.debater2 = Math.round((debates[debateId].scores.debater2 + against_points) * 10) / 10;
+        } else {
+          debates[debateId].scores.debater1 = Math.round((debates[debateId].scores.debater1 + against_points) * 10) / 10;
+          debates[debateId].scores.debater2 = Math.round((debates[debateId].scores.debater2 + for_points) * 10) / 10;
+        }
+        
+        saveData();
+
+        io.to(debateId).emit("exchange-scored", {
+          scores: debates[debateId].scores,
+          exchange: {
+            forUser: { id: forMessage.debaterId, points: for_points },
+            againstUser: { id: againstMessage.debaterId, points: against_points },
+            winner: exchange_winner,
+            reasoning: againstAI.reasoning // Use the responder's discourse reasoning
+          },
+        });
+      }
+    }
+  });
+});
+
+server.listen(PORT, () => {
+  console.log(`Debate Proctor Gateway running at http://localhost:${PORT}`);
+  console.log(`Routing AI analysis to Python FastAPI at: ${SERVER_URL}/analyze`);
+});
