@@ -2,8 +2,8 @@ import json
 from database import operations as db
 
 def view_ai_database():
-    print("📥 Connecting to AI Database...")
-    conn = db.get_connection("ai")
+    print("📥 Connecting to Aadhaar Database...")
+    conn = db.get_connection("aadhaar")
     
     try:
         cursor = conn.cursor()
@@ -25,7 +25,7 @@ def view_ai_database():
         ]
         
         # 3. Save it to a JSON file in your current folder
-        output_filename = "ai_database_dump.json"
+        output_filename = "aadhaar_database_dump.json"
         with open(output_filename, "w", encoding="utf-8") as f:
             json.dump(export_data, f, indent=4)
             

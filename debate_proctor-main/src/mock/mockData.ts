@@ -20,8 +20,8 @@ export const mockUsers: User[] = [
 export const mockTopics: Topic[] = [
   {
     id: "t1",
-    title: "AI will replace human jobs within 10 years",
-    category: "Technology",
+    title: "The Impact and Validity of the Aadhaar System",
+    category: "Public Policy",
   },
   {
     id: "t2",
@@ -30,8 +30,8 @@ export const mockTopics: Topic[] = [
   },
   {
     id: "t3",
-    title: "Should AI be used in education?",
-    category: "Technology",
+    title: "Aadhaar: Privacy, Data Security, and the Risk of Surveillance",
+    category: "Privacy, Security",
   },
   {
     id: "t4",
@@ -45,51 +45,46 @@ export const mockTopics: Topic[] = [
   },
   {
     id: "t6",
-    title: "Is AI good or bad?",
-    category: "Technology",
-  },
-  {
-    id: "t7",
     title: "Should AI-generated content be clearly labeled?",
     category: "Technology",
   },
 ];
 
 // Mock Debates
-export const mockDebates: Debate[] = [
-  {
-    id: "d1",
-    topic: {
-      id: "t1",
-      title: "AI will replace human jobs within 10 years",
-      category: "Technology",
-    },
-    debater1: { id: "1", username: "sudip", position: "for" },
-    debater2: { id: "2", username: "sasuke", position: "against" },
-    status: "live",
-    currentRound: 2,
-    totalRounds: 3,
-    currentTurn: "debater1",
-    timeRemaining: 420,
-    startedAt: new Date(Date.now() - 600000).toISOString(),
-  },
-  {
-    id: "d2",
-    topic: {
-      id: "t2",
-      title: "Social media does more harm than good",
-      category: "Society",
-    },
-    debater1: { id: "3", username: "tubai", position: "against" },
-    debater2: { id: "1", username: "sudip", position: "for" },
-    status: "live",
-    currentRound: 1,
-    totalRounds: 3,
-    currentTurn: "debater2",
-    timeRemaining: 540,
-    startedAt: new Date(Date.now() - 300000).toISOString(),
-  },
-];
+// export const mockDebates: Debate[] = [
+//   {
+//     id: "d1",
+//     topic: {
+//       id: "t1",
+//       title: "AI will replace human jobs within 10 years",
+//       category: "Technology",
+//     },
+//     debater1: { id: "1", username: "sudip", position: "for" },
+//     debater2: { id: "2", username: "sasuke", position: "against" },
+//     status: "live",
+//     currentRound: 2,
+//     totalRounds: 3,
+//     currentTurn: "debater1",
+//     timeRemaining: 420,
+//     startedAt: new Date(Date.now() - 600000).toISOString(),
+//   },
+//   {
+//     id: "d2",
+//     topic: {
+//       id: "t2",
+//       title: "Social media does more harm than good",
+//       category: "Society",
+//     },
+//     debater1: { id: "3", username: "tubai", position: "against" },
+//     debater2: { id: "1", username: "sudip", position: "for" },
+//     status: "live",
+//     currentRound: 1,
+//     totalRounds: 3,
+//     currentTurn: "debater2",
+//     timeRemaining: 540,
+//     startedAt: new Date(Date.now() - 300000).toISOString(),
+//   },
+// ];
 
 // Mock Messages (Record mapping debateId to an array of messages)
 // export const mockMessages: Record<string, Message[]> = {

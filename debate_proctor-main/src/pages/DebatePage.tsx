@@ -33,13 +33,7 @@ import type { Debate, Message, User, ExchangeResult } from "@/types";
 import { getDebateById, postMessage, completeDebate } from "@/api/debateAPI";
 import { useSocket } from "@/contexts/SocketContext";
 
-// --- Isolated Timer Component to prevent full-page re-renders ---
-// `expectedEndAt` is the server's authoritative end time for this debate.
-// Deriving the countdown from it (instead of a static "150 seconds" prop)
-// means: refreshing the page doesn't reset the clock, and a debate that
-// nobody's browser is watching still has a real, computable end time that
-// the SERVER can act on (see server.js sweep) instead of relying on a
-// client's setInterval to ever fire completeDebate().
+
 const DebateTimer: React.FC<{ expectedEndAt: string | null | undefined; fallbackSeconds: number; onTimeEnd: () => void }> = ({
   expectedEndAt,
   fallbackSeconds,
@@ -307,11 +301,6 @@ const DebatePage: React.FC = () => {
   const isDebater1 = user?.id === debate.debater1.id;
   const isDebater2 = user?.id === debate.debater2?.id;
   const isMyTurn = (currentTurn === "debater1" && isDebater1) || (currentTurn === "debater2" && isDebater2);
-  // Spectator status is derived purely from whether this user is actually
-  // seated as debater1/debater2 on THIS debate. Seats are only ever filled
-  // via debate creation or PUT /api/debates/:id/join (which requires knowing
-  // the debate's id). So anyone who lands in a room without having been
-  // placed into a seat that way is simply audience — never a participant.
   const isAudience = !isDebater1 && !isDebater2;
 
   return (
