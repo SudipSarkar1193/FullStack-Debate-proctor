@@ -107,6 +107,7 @@ app.post("/api/debates", async (req, res) => {
     startedAt: new Date().toISOString(),
     messages: [],
     scores: { debater1: 0, debater2: 0 },
+    exchangeHistory: [],
   };
 
   debates[id] = debate;
@@ -118,6 +119,30 @@ app.get("/api/debates/:id", (req, res) => {
   const debate = debates[req.params.id];
   if (!debate) return res.status(404).json({ error: "Debate not found" });
   res.json(debate);
+});
+
+app.get("/api/debates", (req, res) => {
+  const { userId, status } = req.query;
+
+  let list = Object.values(debates);
+
+  if (status) {
+    list = list.filter((d) => d.status === status);
+  }
+
+  if (userId) {
+    list = list.filter(
+      (d) => d.debater1?.id === userId || d.debater2?.id === userId
+    );
+  }
+
+  // Lightweight summary — omit the full transcript to keep the list payload
+  // small; full messages/exchangeHistory are fetched via GET /api/debates/:id
+  const summarized = list
+    .map(({ messages, ...rest }) => rest)
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+  res.json(summarized);
 });
 
 app.put("/api/debates/:id/join", (req, res) => {
@@ -137,6 +162,21 @@ app.put("/api/debates/:id/join", (req, res) => {
   saveData();
 
   io.to(debate.id).emit("debate-updated", debate);
+  res.json(debate);
+});
+
+
+app.put("/api/debates/:id/complete", (req, res) => {
+  const debate = debates[req.params.id];
+  if (!debate) return res.status(404).json({ error: "Debate not found" });
+
+  if (debate.status !== "completed") {
+    debate.status = "completed";
+    debate.completedAt = new Date().toISOString();
+    saveData();
+    io.to(debate.id).emit("debate-updated", debate);
+  }
+
   res.json(debate);
 });
 
@@ -259,17 +299,23 @@ io.on("connection", (socket) => {
           debates[debateId].scores.debater1 = Math.round((debates[debateId].scores.debater1 + against_points) * 10) / 10;
           debates[debateId].scores.debater2 = Math.round((debates[debateId].scores.debater2 + for_points) * 10) / 10;
         }
+
+        // --- NEW: build once, persist, then broadcast the same object ---
+        const exchangeResult = {
+          forUser: { id: forMessage.debaterId, points: for_points },
+          againstUser: { id: againstMessage.debaterId, points: against_points },
+          winner: exchange_winner,
+          reasoning: againstAI.reasoning,
+        };
+
+        debates[debateId].exchangeHistory = debates[debateId].exchangeHistory || [];
+        debates[debateId].exchangeHistory.push(exchangeResult);
         
         saveData();
 
         io.to(debateId).emit("exchange-scored", {
           scores: debates[debateId].scores,
-          exchange: {
-            forUser: { id: forMessage.debaterId, points: for_points },
-            againstUser: { id: againstMessage.debaterId, points: against_points },
-            winner: exchange_winner,
-            reasoning: againstAI.reasoning // Use the responder's discourse reasoning
-          },
+          exchange: exchangeResult,
         });
       }
     }

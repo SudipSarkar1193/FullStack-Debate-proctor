@@ -2,6 +2,7 @@ import { mockTopics, mockUsers } from "../mock/mockData";
 import type { Debate, Topic, Message, User, Challenge, DebaterPosition } from "../types";
 import type { Socket } from "socket.io-client";
 
+
 // Get URL from .env (or default to localhost for safety)
 const API_URL = import.meta.env.VITE_SERVER_URL;
 
@@ -32,9 +33,39 @@ export const getDebateById = async (id: string): Promise<Debate | undefined> => 
   }
 };
 
-export const getDebates = async (): Promise<Debate[]> => {
-  // Currently returns empty as we haven't built the 'List All' endpoint yet
-  return []; 
+export const getDebates = async (
+  params?: { userId?: string; status?: string }
+): Promise<Debate[]> => {
+  try {
+    const query = new URLSearchParams();
+    if (params?.userId) query.set("userId", params.userId);
+    if (params?.status) query.set("status", params.status);
+    const qs = query.toString();
+
+    const response = await fetch(`${API_URL}/api/debates${qs ? `?${qs}` : ""}`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to fetch debates:", error);
+    return [];
+  }
+};
+
+export const completeDebate = async (debateId: string): Promise<Debate | undefined> => {
+  try {
+    const response = await fetch(`${API_URL}/api/debates/${debateId}/complete`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!response.ok) return undefined;
+    return await response.json();
+  } catch (error) {
+    console.error("Failed to mark debate complete:", error);
+    return undefined;
+  }
 };
 
 export const joinDebate = async (debateId: string, user: User): Promise<boolean> => {

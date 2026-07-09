@@ -14,6 +14,7 @@ class AnalyzeRequest(BaseModel):
     text: str
     previous_text: Optional[str] = None  # User's previous message (for logic check)
     topic: str = "ai"  # Topic key from TOPIC_REGISTRY (e.g. "ai", "aadhaar")
+    debater_name: Optional[str] = None
 
 class EvidenceItem(BaseModel):
     text: str
@@ -75,8 +76,13 @@ def analyze_claim(request: AnalyzeRequest):
         result = core.orchestrate_analysis(
             text=request.text,
             previous_text=request.previous_text,
-            topic=topic_key
+            topic=topic_key,
+            debater_name=request.debater_name,
         )
+
+        print();
+        print("===========================");
+        print("result ->>", result);
         
         # Map Dict to Pydantic Model
         return AnalyzeResponse(

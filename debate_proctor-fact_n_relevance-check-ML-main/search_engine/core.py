@@ -79,7 +79,7 @@ def load_brain(topic):
     except Exception as e:
         raise RuntimeError(f"Failed to load brain for {topic}: {e}")
 
-def search(topic, query, k=3):
+def search(topic, query, k=5):
     """Topic-aware search."""
     brain = load_brain(topic)
     index = brain["index"]
@@ -87,7 +87,7 @@ def search(topic, query, k=3):
     
     print(f"🔍 Searching [{topic.upper()}]: '{query[:50]}...'")
     
-    # NEW: Generate query embedding locally using BAAI
+    # Generate query embedding locally using BAAI
     query_vec = embedding_model.encode([query], normalize_embeddings=True).astype('float32')
     
     distances, indices = index.search(query_vec, k)
@@ -106,6 +106,11 @@ def search(topic, query, k=3):
             "url": meta['url'],
             "similarity": similarity
         })
+
+    print(f"\n📚 TOP {len(results)} SIMILAR STATEMENTS RETRIEVED:")
+    for rank, r in enumerate(results, start=1):
+        print(f"\n   {rank}. [{r['source']}] (sim={r['similarity']:.2f}): {r['text']}")
+            
         
     return results
 
@@ -127,15 +132,18 @@ def verify_claim_with_llm(claim, facts):
         evidence_text += f"EVIDENCE #{i} (Source: {f['source']}, Sim: {f['similarity']:.2f}):\n{f['text']}\n\n"
         
     prompt = f"""SYSTEM: You are a strict fact-checker. For each piece of evidence,
-decide whether it SUPPORTS, CONTRADICTS, or is NEUTRAL toward the claim.
+decide how it relates to the claim using ONE of these four labels:
 
-- SUPPORT: the evidence directly affirms the claim or provides facts entailing it.
-- CONTRADICT: the evidence directly refutes the claim or provides facts incompatible with it.
-- NEUTRAL: the evidence is on-topic but does not directly bear on the claim's truth value,
-  OR the evidence is off-topic / unrelated.
+- SUPPORT: the evidence explicitly states the claim's specific figures/facts, or directly entails them.
+- CONTRADICT: the evidence explicitly conflicts with the claim's figures or direction.
+- CONSISTENT: the evidence discusses the same underlying phenomenon and the claim's
+  specific figure is plausible given what the evidence describes, but the evidence does NOT
+  state that exact figure or study. Use this for claims that sound reasonable and on-topic
+  but can't be confirmed at that level of specificity from this evidence alone.
+- NEUTRAL: the evidence is off-topic or unrelated to the claim.
 
-Be strict. If the evidence only tangentially relates to the claim, label NEUTRAL,
-not SUPPORT.
+Be strict about the difference between SUPPORT and CONSISTENT: only use SUPPORT when the
+evidence actually contains the specific number, study, or fact being claimed.
 
 CLAIM: "{claim}"
 
@@ -144,8 +152,8 @@ CLAIM: "{claim}"
 OUTPUT JSON ONLY in this exact schema:
 {{
   "per_chunk": [
-    {{"index": 0, "label": "SUPPORT|CONTRADICT|NEUTRAL", "confidence": 0.0-1.0, "reason": "<one short sentence>"}},
-    ...one entry per evidence chunk in order...
+    {{"index": 0, "label": "SUPPORT|CONTRADICT|CONSISTENT|NEUTRAL", "confidence": 0.0-1.0, "reason": "<one short sentence>"}},
+    ...
   ],
   "global_explanation": "<one sentence summarizing the overall picture>"
 }}
@@ -170,10 +178,13 @@ OUTPUT JSON ONLY in this exact schema:
         normalized = []
         for i in range(len(facts)):
             if i < len(per_chunk) and isinstance(per_chunk[i], dict):
+                
                 entry = per_chunk[i]
+
                 label = entry.get("label", "NEUTRAL").upper()
-                if label not in ("SUPPORT", "CONTRADICT", "NEUTRAL"):
+                if label not in ("SUPPORT", "CONTRADICT", "CONSISTENT", "NEUTRAL"):
                     label = "NEUTRAL"
+
                 conf = float(entry.get("confidence", 0.5))
                 conf = max(0.0, min(1.0, conf))
                 normalized.append({
@@ -207,6 +218,8 @@ def calculate_mathematical_score(llm_result, facts):
     support_mass = 0.0
     refute_mass = 0.0
     neutral_mass = 0.0
+
+    CONSISTENT_WEIGHT = 0.6 
     
     print("\n🧮 MATH ENGINE:")
     for f, verdict in zip(facts, per_chunk):
@@ -216,10 +229,16 @@ def calculate_mathematical_score(llm_result, facts):
         label = verdict['label']
         
         if label == "SUPPORT":
+            weight = sim * conf
             support_mass += weight
         elif label == "CONTRADICT":
+            weight = sim * conf
             refute_mass += weight
+        elif label == "CONSISTENT":
+            weight = sim * conf * CONSISTENT_WEIGHT
+            support_mass += weight   # counts toward decisive mass, but discounted
         else:
+            weight = sim * conf
             neutral_mass += weight
         
         print(f"   - '{f['source']}': sim={sim:.2f} conf={conf:.2f} → {label} (w={weight:.2f})")
@@ -253,11 +272,13 @@ def calculate_mathematical_score(llm_result, facts):
     }
 
 
-def orchestrate_analysis(text, previous_text=None, topic="ai"):
+def orchestrate_analysis(text, previous_text=None, topic="ai", debater_name = None):
     """Combines Fact Checking + Relevance Evaluation."""
     print(f"\n📢 ORCHESTRATOR: Analyzing for Topic [{topic.upper()}]...")
+
+    print(f"🗣️  Statement from {debater_name or 'Unknown User'}: \"{text}\"")
     
-    facts = search(topic, text, k=3)
+    facts = search(topic, text, k=5)
     llm_fact = verify_claim_with_llm(text, facts)
     math_fact = calculate_mathematical_score(llm_fact, facts)
     
@@ -284,6 +305,8 @@ def orchestrate_analysis(text, previous_text=None, topic="ai"):
 
 
 if __name__ == "__main__":
+
+    # For TESTING
     topic = "ai"
     prev_arg = "Artificial intelligence poses no threat to job security."
     curr_resp = "AI tools will automate repetitive tasks and eliminate positions."

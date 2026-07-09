@@ -2,7 +2,7 @@
 import React, { useState, useEffect, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Eye, Swords, LogOut, Users, Loader2, Copy, LogIn } from "lucide-react";
+import { Plus, Eye, Swords, LogOut, Users, Loader2, Copy, LogIn, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import type { Debate, Topic, User, Challenge } from "@/types";
+
 
 import {
   getDebates,
@@ -192,6 +193,14 @@ const DashboardPage: React.FC = () => {
                 </div>
               </DialogContent>
             </Dialog>
+
+            <Button
+              variant="secondary"
+              onClick={() => navigate("/history")}
+              className="gap-2 bg-slate-800 hover:bg-slate-700 text-white"
+            >
+              <History className="w-4 h-4" /> History
+            </Button>
 
             <Button variant="ghost" onClick={handleLogout} className="text-slate-400 hover:text-white">
               <LogOut className="w-4 h-4 mr-2" /> Logout

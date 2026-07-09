@@ -12,6 +12,9 @@ export const mockUsers: User[] = [
   { id: "3", username: "sasuke", role: "debater", password: "pass123" },
   { id: "4", username: "itachi", role: "audience", password: "pass123" },
   { id: "5", username: "zenitsu", role: "audience", password: "pass123" },
+  { id: "6", username: "jeet", role: "debater", password: "pass123" },
+  { id: "7", username: "ram", role: "debater", password: "pass123" },
+
 ];
 
 // Mock Topics
@@ -45,6 +48,51 @@ export const mockTopics: Topic[] = [
     id: "t6",
     title: "Cryptocurrency will replace traditional banking",
     category: "Finance",
+  },
+  {
+    id: "t7",
+    title: "Is AI good or bad?",
+    category: "Technology",
+  },
+  {
+    id: "t8",
+    title: "Could AI contribute to the global water crisis?",
+    category: "Technology",
+  },
+  {
+    id: "t9",
+    title: "Can AI help solve climate change?",
+    category: "Technology",
+  },
+  {
+    id: "t10",
+    title: "Should AI be regulated by governments?",
+    category: "Technology",
+  },
+  {
+    id: "t11",
+    title: "Should AI be used in education?",
+    category: "Technology",
+  },
+  {
+    id: "t12",
+    title: "Is AI a threat to human creativity?",
+    category: "Technology",
+  },
+  {
+    id: "t13",
+    title: "Should autonomous vehicles replace human drivers?",
+    category: "Technology",
+  },
+  {
+    id: "t14",
+    title: "Should companies be allowed to use AI for hiring decisions?",
+    category: "Technology",
+  },
+  {
+    id: "t15",
+    title: "Should AI-generated content be clearly labeled?",
+    category: "Technology",
   },
 ];
 

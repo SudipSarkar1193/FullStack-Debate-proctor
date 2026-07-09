@@ -19,6 +19,7 @@ import {
   Loader2,
   Copy,
   Trophy,
+  Info,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -28,13 +29,14 @@ import { toast } from "sonner";
 import { Avatar, AvatarFallback } from "../components/ui/avatar";
 import { useAuth } from "../contexts/AuthContext";
 import type { Debate, Message, User, ExchangeResult } from "@/types";
-import { getDebateById, postMessage } from "@/api/debateAPI";
+import { getDebateById, postMessage, completeDebate } from "@/api/debateAPI";
 import { useSocket } from "@/contexts/SocketContext";
 
+
 // --- Isolated Timer Component to prevent full-page re-renders ---
-const DebateTimer: React.FC<{ initialSeconds: number; onTimeEnd: () => void }> = ({ 
-  initialSeconds, 
-  onTimeEnd 
+const DebateTimer: React.FC<{ initialSeconds: number; onTimeEnd: () => void }> = ({
+  initialSeconds,
+  onTimeEnd,
 }) => {
   const [seconds, setSeconds] = useState(initialSeconds);
 
@@ -80,7 +82,14 @@ const DebatePage: React.FC = () => {
   const [lastExchange, setLastExchange] = useState<ExchangeResult | null>(null);
   const [exchangeHistory, setExchangeHistory] = useState<ExchangeResult[]>([]);
   const [showEndModal, setShowEndModal] = useState<boolean>(false);
+  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
   const socket = useSocket();
+
+  // Color is tied to WHICH debater sent it, not "is this my own message"
+  const getBubbleClasses = (debaterId: string) =>
+    debate?.debater1.id === debaterId
+      ? "bg-slate-700 text-white"
+      : "bg-slate-800 text-slate-200";
 
   function generateMessageId() {
     messageCounterRef.current += 1;
@@ -99,6 +108,8 @@ const DebatePage: React.FC = () => {
         setIsLoading(true);
         const debateData = await getDebateById(debateId);
 
+        
+
         if (debateData) {
           setDebate(debateData);
           setCurrentTurn(debateData.currentTurn);
@@ -109,6 +120,14 @@ const DebatePage: React.FC = () => {
           if (debateData.scores) {
             setScores(debateData.scores);
           }
+
+          if (debateData.exchangeHistory) {
+            setExchangeHistory(debateData.exchangeHistory);
+          }
+          if (debateData.status === "completed") {
+            setIsTimeUp(true);
+          }
+
         } else {
           toast.error("Error", { description: "Debate not found." });
           navigate("/dashboard");
@@ -187,9 +206,14 @@ const DebatePage: React.FC = () => {
 
   // --- Memoized Time Up Handler ---
   const handleTimeEnd = useCallback(() => {
-    setIsTimeUp(true);
-    setShowEndModal(true);
-  }, []);
+  setIsTimeUp(true);
+  setShowEndModal(true);
+  if (debate?.id) {
+    completeDebate(debate.id).catch((e) => {
+      console.log("Error: ", e);
+    });
+  }
+}, [debate?.id]);
 
   // --- Scroll to Latest Message ---
   useEffect(() => {
@@ -220,7 +244,7 @@ const DebatePage: React.FC = () => {
       message: newMessage,
       messageId: generateMessageId(),
       timestamp: new Date().toISOString(),
-      factCheckStatus: "pending", 
+      factCheckStatus: "pending",
       round: debate.currentRound,
     };
 
@@ -300,9 +324,9 @@ const DebatePage: React.FC = () => {
                 <div>
                   <p className="text-sm text-slate-400 mb-2">Time Remaining</p>
                   {/* The Isolated Clock Component */}
-                  <DebateTimer 
-                    initialSeconds={debate.timeRemaining} 
-                    onTimeEnd={handleTimeEnd} 
+                  <DebateTimer
+                    initialSeconds={debate.timeRemaining}
+                    onTimeEnd={handleTimeEnd}
                   />
                 </div>
                 <div className="pt-4 border-t border-slate-700">
@@ -353,7 +377,7 @@ const DebatePage: React.FC = () => {
                 </div>
               </div>
               <div className="mt-4 text-sm font-semibold text-white mb-1 p-4 bg-slate-700/50 border-2 border-slate-600 rounded-lg flex items-center justify-between">
-                <span>Room: {debateId?.slice(0,8)}...</span>
+                <span>Room: {debateId?.slice(0, 8)}...</span>
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(debateId || "");
@@ -366,13 +390,16 @@ const DebatePage: React.FC = () => {
               </div>
             </Card>
           </div>
-          
+
           <div className="lg:col-span-3">
             <Card className="bg-slate-900/50 border-slate-700 h-[calc(100vh-200px)] flex flex-col">
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
                 <AnimatePresence>
                   {messages.map((msg, index) => {
                     const isOwnMessage = msg.debaterId === user?.id;
+                    const bubbleClasses = getBubbleClasses(msg.debaterId);
+                    const hasAnalysis = !!msg._aiData;
+
                     return (
                       <motion.div
                         key={msg.messageId || index}
@@ -388,12 +415,10 @@ const DebatePage: React.FC = () => {
                               {new Date(msg.timestamp).toLocaleTimeString()}
                             </p>
                           </div>
-                          <div
-                            className={`p-4 rounded-lg ${
-                              isOwnMessage ? "bg-slate-700 text-white" : "bg-slate-800 text-slate-200"
-                            }`}
-                          >
+
+                          <div className={`p-4 rounded-lg ${bubbleClasses}`}>
                             <p className="text-sm leading-relaxed">{msg.message}</p>
+
                             <motion.div
                               initial={{ scale: 0 }}
                               animate={{ scale: 1 }}
@@ -404,16 +429,77 @@ const DebatePage: React.FC = () => {
                               <span
                                 className={`text-xs ${
                                   msg.factCheckStatus === "verified"
-                                    ? "text-green-400"
+                                    ? "text-green-300"
                                     : msg.factCheckStatus === "questionable"
-                                    ? "text-yellow-400"
+                                    ? "text-yellow-300"
                                     : msg.factCheckStatus === "pending"
-                                    ? "text-blue-400"
-                                    : "text-slate-500"
+                                    ? "text-blue-200"
+                                    : "text-slate-300"
                                 }`}
                               >
                                 {msg.factCheckStatus}
                               </span>
+
+                              {/* --- Info button + tooltip ---
+                                  Hover handlers live on the OUTER wrapper (not just the
+                                  button) so the hover zone spans the gap between the
+                                  button and the tooltip above it. Handlers on the button
+                                  alone would close the tooltip the instant the cursor
+                                  left the 16px icon, before it ever reached the content. */}
+                              <div
+                                className="relative ml-1"
+                                onMouseEnter={() => setHoveredMessageId(msg.messageId)}
+                                onMouseLeave={() => setHoveredMessageId(null)}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setHoveredMessageId((cur) => (cur === msg.messageId ? null : msg.messageId))
+                                  }
+                                  className="w-4 h-4 flex items-center justify-center rounded-full bg-black/20 hover:bg-black/35 transition"
+                                  aria-label="View analysis"
+                                >
+                                  <Info className="w-3 h-3 text-white/80" />
+                                </button>
+
+                                <AnimatePresence>
+                                  {hoveredMessageId === msg.messageId && (
+                                    <motion.div
+                                      initial={{ opacity: 0, y: 4 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      exit={{ opacity: 0, y: 4 }}
+                                      className={`absolute z-50 bottom-6 ${
+                                        isOwnMessage ? "right-0" : "left-0"
+                                      } w-64 p-3 rounded-lg bg-slate-950 border border-slate-700 shadow-xl text-left`}
+                                    >
+                                      {hasAnalysis ? (
+                                        <>
+                                          <p className="text-xs font-semibold text-white mb-2">Analysis</p>
+                                          <div className="flex justify-between text-xs mb-1">
+                                            <span className="text-slate-400">Factual score</span>
+                                            <span className="text-slate-200 font-medium">
+                                              {msg._aiData!.factual_score.toFixed(0)}%
+                                            </span>
+                                          </div>
+                                          <div className="flex justify-between text-xs mb-2">
+                                            <span className="text-slate-400">Relevance score</span>
+                                            <span className="text-slate-200 font-medium">
+                                              {msg._aiData!.relevance_score.toFixed(0)}%
+                                            </span>
+                                          </div>
+                                          <p className="text-xs text-slate-400 leading-relaxed border-t border-slate-800 pt-2">
+                                            {msg._aiData!.reasoning || "No reasoning provided."}
+                                          </p>
+                                        </>
+                                      ) : (
+                                        <p className="text-xs text-slate-400">
+                                          No analysis available for this message yet.
+                                        </p>
+                                      )}
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
                             </motion.div>
                           </div>
                         </div>

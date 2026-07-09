@@ -40,10 +40,12 @@ export interface Debate {
   currentRound: number;
   totalRounds: number;
   currentTurn: DebateTurn;
+  completedAt?: string | null;
   timeRemaining: number; // in seconds
   startedAt: string; // ISO 8601 date string
   messages?: Message[];
   scores?: { debater1: number; debater2: number };
+  exchangeHistory?: ExchangeResult[];
 }
 
 // Defines the result of one complete For+Against exchange scored by the LLM
@@ -57,17 +59,26 @@ export interface ExchangeResult {
 // Defines the possible statuses for fact-checking
 export type FactCheckStatus = 'verified' | 'questionable' | 'pending' | 'unverified';
 
+
+export interface MessageAIData {
+  factual_score: number;
+  relevance_score: number;
+  reasoning: string;
+}
+
 // Defines the structure of a Message object within a debate
 export interface Message {
   id: string;
   debaterId: string;
   debaterName: string;
   message: string;
-  messageId:string,
-  timestamp: string; // ISO 8601 date string
+  messageId: string;
+  timestamp: string;
   factCheckStatus: FactCheckStatus;
   round: number;
+  _aiData?: MessageAIData; // present once Python analysis completes
 }
+
 
 // Defines the structure for challenge requests
 export interface Challenge {
@@ -79,3 +90,5 @@ export interface Challenge {
     status: 'pending' | 'accepted' | 'declined';
     createdAt: string; // ISO 8601 date string
 }
+
+
