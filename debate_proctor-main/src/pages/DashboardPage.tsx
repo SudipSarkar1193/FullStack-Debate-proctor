@@ -23,7 +23,6 @@ import type { Debate, Topic, User, Challenge } from "@/types";
 import {
   getDebates,
   getTopics,
-  getUsers,
   createChallenge,
   joinDebate,
   getDebateById,
@@ -47,6 +46,35 @@ const DashboardPage: React.FC = () => {
   // Join By ID State (NEW)
   const [joinId, setJoinId] = useState("");
   const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false);
+
+  const [liveDebates, setLiveDebates] = useState<Debate[]>([]);
+
+  useEffect(() => {
+    if (!user) return;
+    const fetchLive = async () => {
+      const all = await getDebates(); // unfiltered fetch — visible to any logged-in user
+      setLiveDebates(
+        all.filter((d) => {
+          const isLiveOrOpen = d.status === "pending" || d.status === "live";
+          // The creator (and anyone already seated as debater1/debater2) already
+          // has this debate under "Your Active Debates" — don't also surface it
+          // here as something to discover/join, and definitely don't let the
+          // creator "watch" their own debate from this list.
+          const isOwnDebate = d.debater1.id === user.id || d.debater2?.id === user.id;
+          return isLiveOrOpen && !isOwnDebate;
+        })
+      );
+    };
+    fetchLive();
+    const interval = setInterval(fetchLive, 5000); // poll for new/joined debates
+    return () => clearInterval(interval);
+  }, [user]);
+
+  // Entering a room from this discovery list is ALWAYS as audience. Becoming
+  // a debater (filling debater2) requires knowing the exact debate ID that
+  // the creator shared out-of-band — see handleJoinById below. There is no
+  // one-click "join as opponent" from browsing anymore.
+  const handleWatch = (debateId: string) => navigate(`/debate/${debateId}`);
 
   useEffect(() => {
     if (!user) {
@@ -194,6 +222,8 @@ const DashboardPage: React.FC = () => {
               </DialogContent>
             </Dialog>
 
+            
+
             <Button
               variant="secondary"
               onClick={() => navigate("/history")}
@@ -264,6 +294,50 @@ const DashboardPage: React.FC = () => {
               </div>
             </DialogContent>
           </Dialog>
+        </div>
+
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-white mb-4 flex items-center">
+            <Eye className="w-6 h-6 mr-2 text-slate-400" /> Live & Open Debates
+          </h2>
+
+          {liveDebates.length === 0 ? (
+            <Card className="p-8 bg-slate-900/50 border-slate-700 text-center">
+              <p className="text-slate-400">No debates happening right now. Start one!</p>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {liveDebates.map((d) => {
+                const isOpen = d.status === "pending" && !d.debater2?.id;
+
+                return (
+                  <Card key={d.id} className="p-6 bg-slate-900/50 border-slate-700 hover:border-slate-600 transition-all">
+                    <div className="flex justify-between items-start mb-3">
+                      <div>
+                        <h3 className="text-lg font-semibold text-white">{d.topic.title}</h3>
+                        <p className="text-sm text-slate-400 mt-1">
+                          {d.debater1.username} ({d.debater1.position})
+                          {d.debater2?.id ? ` vs ${d.debater2.username} (${d.debater2.position})` : " — waiting for opponent"}
+                        </p>
+                      </div>
+                      <Badge className={d.status === "live"
+                        ? "bg-green-500/10 text-green-400 border-green-500/20"
+                        : "bg-yellow-500/10 text-yellow-400 border-yellow-500/20"}>
+                        {d.status}
+                      </Badge>
+                    </div>
+
+                    {/* Browsing this list only ever gets you in as audience. To
+                        debate, you need the room's ID from whoever created it —
+                        use "Join by ID" above. */}
+                    <Button onClick={() => handleWatch(d.id)} size="sm" variant="outline" className="bg-slate-600 border-slate-600 text-slate-300 hover:bg-slate-800 w-full gap-2">
+                      <Eye className="w-4 h-4" /> {isOpen ? "Watch (Waiting for Opponent)" : "Watch Live"}
+                    </Button>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Created Debates List */}

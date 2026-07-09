@@ -45,14 +45,18 @@ class AnalyzeResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 API Starting...")
-    # Pre-warm brains for all configured topics. Lazy-loading still works
-    # if any one fails — search() will load on demand.
+    
+    # 1. Force PyTorch to compile the execution graphs
+    core.warmup_models()
+    
+    # 2. Pre-warm FAISS brains for all configured topics. 
     for topic in TOPIC_REGISTRY.keys():
         try:
             core.load_brain(topic)
             print(f"✅ Brain ready for [{topic}]")
         except Exception as e:
             print(f"⚠️ Brain pre-warm failed for [{topic}]: {e} (will lazy-load on first request)")
+            
     yield
     print("💤 API Stopping...")
 
@@ -80,9 +84,9 @@ def analyze_claim(request: AnalyzeRequest):
             debater_name=request.debater_name,
         )
 
-        print();
-        print("===========================");
-        print("result ->>", result);
+        # print();
+        # print("===========================");
+        # print("result ->>", result);
         
         # Map Dict to Pydantic Model
         return AnalyzeResponse(

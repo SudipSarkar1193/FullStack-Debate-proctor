@@ -7,14 +7,13 @@ import type { User, Topic, Debate, Message, Challenge } from "@/types";
 
 // Mock Users
 export const mockUsers: User[] = [
-  { id: "1", username: "sudip", role: "debater", password: "pass123" },
-  { id: "2", username: "tubai", role: "debater", password: "pass123" },
-  { id: "3", username: "sasuke", role: "debater", password: "pass123" },
-  { id: "4", username: "itachi", role: "audience", password: "pass123" },
-  { id: "5", username: "zenitsu", role: "audience", password: "pass123" },
-  { id: "6", username: "jeet", role: "debater", password: "pass123" },
-  { id: "7", username: "ram", role: "debater", password: "pass123" },
-
+  { id: "1", username: "sudip", password: "pass123" },
+  { id: "2", username: "tubai", password: "pass123" },
+  { id: "3", username: "sasuke", password: "pass123" },
+  { id: "4", username: "itachi", password: "pass123" },
+  { id: "5", username: "zenitsu", password: "pass123" },
+  { id: "6", username: "jeet", password: "pass123" },
+  { id: "7", username: "ram", password: "pass123" },
 ];
 
 // Mock Topics
@@ -26,71 +25,31 @@ export const mockTopics: Topic[] = [
   },
   {
     id: "t2",
-    title: "Social media does more harm than good",
-    category: "Society",
+    title: "The Environmental Cost of AI Data Centers",
+    category: "Technology",
   },
   {
     id: "t3",
-    title: "Climate change is the biggest threat to humanity",
-    category: "Environment",
-  },
-  {
-    id: "t4",
-    title: "Remote work is better than office work",
-    category: "Work Culture",
-  },
-  {
-    id: "t5",
-    title: "Nuclear energy is the solution to the climate crisis",
-    category: "Energy",
-  },
-  {
-    id: "t6",
-    title: "Cryptocurrency will replace traditional banking",
-    category: "Finance",
-  },
-  {
-    id: "t7",
-    title: "Is AI good or bad?",
-    category: "Technology",
-  },
-  {
-    id: "t8",
-    title: "Could AI contribute to the global water crisis?",
-    category: "Technology",
-  },
-  {
-    id: "t9",
-    title: "Can AI help solve climate change?",
-    category: "Technology",
-  },
-  {
-    id: "t10",
-    title: "Should AI be regulated by governments?",
-    category: "Technology",
-  },
-  {
-    id: "t11",
     title: "Should AI be used in education?",
     category: "Technology",
   },
   {
-    id: "t12",
+    id: "t4",
     title: "Is AI a threat to human creativity?",
     category: "Technology",
   },
   {
-    id: "t13",
-    title: "Should autonomous vehicles replace human drivers?",
+    id: "t5",
+    title: "Should AI be regulated by governments?",
     category: "Technology",
   },
   {
-    id: "t14",
-    title: "Should companies be allowed to use AI for hiring decisions?",
+    id: "t6",
+    title: "Is AI good or bad?",
     category: "Technology",
   },
   {
-    id: "t15",
+    id: "t7",
     title: "Should AI-generated content be clearly labeled?",
     category: "Technology",
   },

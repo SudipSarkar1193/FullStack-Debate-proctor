@@ -1,6 +1,24 @@
 ================ requirements.txt ================
-requirements.txt not found
+# Web Framework & Validation
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.6.0
 
+# Machine Learning & Vector Search
+faiss-cpu>=1.7.4
+sentence-transformers>=2.3.1
+numpy>=1.26.0
+
+# LLM APIs
+google-genai>=0.3.0
+
+# Database & Scraping
+psycopg2-binary>=2.9.9
+wikipedia-api>=0.6.0
+
+# Utilities
+python-dotenv>=1.0.0
+tenacity>=8.2.0
 ==================================================
 FILE: ./api.py
 ==================================================
@@ -20,6 +38,7 @@ class AnalyzeRequest(BaseModel):
     text: str
     previous_text: Optional[str] = None  # User's previous message (for logic check)
     topic: str = "ai"  # Topic key from TOPIC_REGISTRY (e.g. "ai", "aadhaar")
+    debater_name: Optional[str] = None
 
 class EvidenceItem(BaseModel):
     text: str
@@ -50,14 +69,18 @@ class AnalyzeResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 API Starting...")
-    # Pre-warm brains for all configured topics. Lazy-loading still works
-    # if any one fails — search() will load on demand.
+    
+    # 1. Force PyTorch to compile the execution graphs
+    core.warmup_models()
+    
+    # 2. Pre-warm FAISS brains for all configured topics. 
     for topic in TOPIC_REGISTRY.keys():
         try:
             core.load_brain(topic)
             print(f"✅ Brain ready for [{topic}]")
         except Exception as e:
             print(f"⚠️ Brain pre-warm failed for [{topic}]: {e} (will lazy-load on first request)")
+            
     yield
     print("💤 API Stopping...")
 
@@ -81,8 +104,13 @@ def analyze_claim(request: AnalyzeRequest):
         result = core.orchestrate_analysis(
             text=request.text,
             previous_text=request.previous_text,
-            topic=topic_key
+            topic=topic_key,
+            debater_name=request.debater_name,
         )
+
+        # print();
+        # print("===========================");
+        # print("result ->>", result);
         
         # Map Dict to Pydantic Model
         return AnalyzeResponse(
@@ -116,6 +144,50 @@ def analyze_claim(request: AnalyzeRequest):
         print(f"❌ API Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+==================================================
+FILE: ./dump_db.py
+==================================================
+import json
+from database import operations as db
+
+def view_ai_database():
+    print("📥 Connecting to AI Database...")
+    conn = db.get_connection("ai")
+    
+    try:
+        cursor = conn.cursor()
+        
+        # 1. Fetch the pageid, title, url, AND the full text content
+        print("⏳ Fetching full text for all articles... This might take a second.")
+        cursor.execute("SELECT pageid, title, url, content FROM raw_facts")
+        full_rows = cursor.fetchall()
+        
+        # 2. Format it into a clean list of dictionaries
+        export_data = [
+            {
+                "id": r[0], 
+                "title": r[1], 
+                "url": r[2], 
+                "content": r[3]
+            } 
+            for r in full_rows
+        ]
+        
+        # 3. Save it to a JSON file in your current folder
+        output_filename = "ai_database_dump.json"
+        with open(output_filename, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=4)
+            
+        print(f"\n✅ Success! {len(export_data)} articles fully exported.")
+        print(f"💾 Open '{output_filename}' in your code editor to read the full text.")
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    view_ai_database()
 ==================================================
 FILE: ./main.py
 ==================================================
@@ -180,6 +252,26 @@ def main():
 if __name__ == "__main__":
     main()
 ==================================================
+FILE: ./test_orchestrator.py
+==================================================
+# test_orchestrator.py
+from search_engine.core import orchestrate_analysis
+
+print("🚀 Running Orchestrator Test in Isolation...")
+
+# Fake a debater statement
+mock_statement = "According to the International Energy Agency (IEA), a 100-megawatt data center can consume up to 2 million liters of water per day."
+
+# Fire the orchestrator directly
+analysis_result = orchestrate_analysis(
+    text=mock_statement,
+    previous_text=None,
+    topic="ai",
+    debater_name="TestDebater"
+)
+
+print("\n🎉 Test Complete!")
+==================================================
 FILE: ./check_models.py
 ==================================================
 import os
@@ -203,6 +295,29 @@ try:
         print(f"✅ AVAILABLE: {m.name}")
 except Exception as e:
     print(f"❌ Error listing models: {e}")
+==================================================
+FILE: ./bench_cross_encoder.py
+==================================================
+import time
+from sentence_transformers import CrossEncoder
+
+print("Loading model...")
+model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+query = "A 2021 study estimated that U.S. data centers directly consume 1.7 billion liters of water daily."
+docs = [f"Sample evidence chunk number {i} about AI data centers and water consumption in cooling systems." for i in range(20)]
+pairs = [[query, d] for d in docs]
+
+# Warm-up run (first call always includes JIT/cache overhead — don't count it)
+model.predict(pairs)
+
+times = []
+for _ in range(10):
+    start = time.perf_counter()
+    model.predict(pairs)
+    times.append((time.perf_counter() - start) * 1000)
+
+print(f"20-pair rerank — min: {min(times):.1f}ms  avg: {sum(times)/len(times):.1f}ms  max: {max(times):.1f}ms")
 ==================================================
 FILE: ./test_wiki_fetch.py
 ==================================================
@@ -295,7 +410,10 @@ import pickle
 import numpy as np
 import faiss
 import json
-from sentence_transformers import SentenceTransformer
+import time
+import math
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from google.genai import types
 
@@ -322,9 +440,12 @@ else:
 # 1. Modern Gemini Client
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 2. Local BAAI Embedding Model
+# 2. Local BAAI Embedding Model & CrossEncoder
 print("📥 Loading BAAI/bge-small-en-v1.5 locally...")
 embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+print("📥 Loading Cross-Encoder (ms-marco-MiniLM-L-6-v2)...")
+cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 VERIFIER_MODEL = "gemini-3.1-flash-lite"
 
@@ -370,34 +491,55 @@ def load_brain(topic):
     except Exception as e:
         raise RuntimeError(f"Failed to load brain for {topic}: {e}")
 
-def search(topic, query, k=3):
-    """Topic-aware search."""
+def search(topic, query, fetch_k=20, top_k=5):
+    """Two-Stage Topic-aware search (Retrieve & Re-rank)."""
     brain = load_brain(topic)
     index = brain["index"]
     metadata = brain["metadata"]
-    
+
     print(f"🔍 Searching [{topic.upper()}]: '{query[:50]}...'")
-    
-    # NEW: Generate query embedding locally using BAAI
+
     query_vec = embedding_model.encode([query], normalize_embeddings=True).astype('float32')
-    
-    distances, indices = index.search(query_vec, k)
-    
-    results = []
+    distances, indices = index.search(query_vec, fetch_k)
+
+    candidates = []
     for i, idx in enumerate(indices[0]):
-        if idx == -1 or idx >= len(metadata): continue 
-        
+        if idx == -1 or idx >= len(metadata):
+            continue
         meta = metadata[idx]
         l2_distance = float(distances[0][i])
-        similarity = max(0.0, min(1.0, 1 - (l2_distance / 2)))
-        
-        results.append({
+        # Unchanged bi-encoder cosine-derived similarity — same scale your
+        # math engine (DECISIVE_MASS_FLOOR, CONSISTENT_WEIGHT) already understands.
+        bi_encoder_sim = max(0.0, min(1.0, 1 - (l2_distance / 2)))
+        candidates.append({
             "text": meta['text'],
             "source": meta['title'],
             "url": meta['url'],
-            "similarity": similarity
+            "similarity": bi_encoder_sim,
         })
-        
+
+    if not candidates:
+        return []
+
+    # Cross-encoder is used ONLY to select the best 5 of 20 — its raw logits
+    # (observed ~-5 to -11 for this domain) aren't on the math engine's
+    # expected 0-1 scale, so we never repurpose them as `similarity`.
+    cross_inp = [[query, c['text']] for c in candidates]
+    cross_scores = cross_encoder.predict(cross_inp)
+
+    for c, score in zip(candidates, cross_scores):
+        c['_rerank_score'] = float(score)
+
+    candidates.sort(key=lambda c: c['_rerank_score'], reverse=True)
+    results = [
+        {k: v for k, v in c.items() if k != '_rerank_score'}
+        for c in candidates[:top_k]
+    ]
+
+    print(f"\n📚 TOP {len(results)} RE-RANKED STATEMENTS SENT TO GEMINI:")
+    for rank, r in enumerate(results, start=1):
+        print(f"   {rank}. [{r['source']}] (sim={r['similarity']:.2f}): {r['text']}...")
+
     return results
 
 @retry(
@@ -418,15 +560,18 @@ def verify_claim_with_llm(claim, facts):
         evidence_text += f"EVIDENCE #{i} (Source: {f['source']}, Sim: {f['similarity']:.2f}):\n{f['text']}\n\n"
         
     prompt = f"""SYSTEM: You are a strict fact-checker. For each piece of evidence,
-decide whether it SUPPORTS, CONTRADICTS, or is NEUTRAL toward the claim.
+decide how it relates to the claim using ONE of these four labels:
 
-- SUPPORT: the evidence directly affirms the claim or provides facts entailing it.
-- CONTRADICT: the evidence directly refutes the claim or provides facts incompatible with it.
-- NEUTRAL: the evidence is on-topic but does not directly bear on the claim's truth value,
-  OR the evidence is off-topic / unrelated.
+- SUPPORT: the evidence explicitly states the claim's specific figures/facts, or directly entails them.
+- CONTRADICT: the evidence explicitly conflicts with the claim's figures or direction.
+- CONSISTENT: the evidence discusses the same underlying phenomenon and the claim's
+  specific figure is plausible given what the evidence describes, but the evidence does NOT
+  state that exact figure or study. Use this for claims that sound reasonable and on-topic
+  but can't be confirmed at that level of specificity from this evidence alone.
+- NEUTRAL: the evidence is off-topic or unrelated to the claim.
 
-Be strict. If the evidence only tangentially relates to the claim, label NEUTRAL,
-not SUPPORT.
+Be strict about the difference between SUPPORT and CONSISTENT: only use SUPPORT when the
+evidence actually contains the specific number, study, or fact being claimed.
 
 CLAIM: "{claim}"
 
@@ -435,8 +580,8 @@ CLAIM: "{claim}"
 OUTPUT JSON ONLY in this exact schema:
 {{
   "per_chunk": [
-    {{"index": 0, "label": "SUPPORT|CONTRADICT|NEUTRAL", "confidence": 0.0-1.0, "reason": "<one short sentence>"}},
-    ...one entry per evidence chunk in order...
+    {{"index": 0, "label": "SUPPORT|CONTRADICT|CONSISTENT|NEUTRAL", "confidence": 0.0-1.0, "reason": "<one short sentence>"}},
+    ...
   ],
   "global_explanation": "<one sentence summarizing the overall picture>"
 }}
@@ -461,10 +606,13 @@ OUTPUT JSON ONLY in this exact schema:
         normalized = []
         for i in range(len(facts)):
             if i < len(per_chunk) and isinstance(per_chunk[i], dict):
+                
                 entry = per_chunk[i]
+
                 label = entry.get("label", "NEUTRAL").upper()
-                if label not in ("SUPPORT", "CONTRADICT", "NEUTRAL"):
+                if label not in ("SUPPORT", "CONTRADICT", "CONSISTENT", "NEUTRAL"):
                     label = "NEUTRAL"
+
                 conf = float(entry.get("confidence", 0.5))
                 conf = max(0.0, min(1.0, conf))
                 normalized.append({
@@ -498,6 +646,8 @@ def calculate_mathematical_score(llm_result, facts):
     support_mass = 0.0
     refute_mass = 0.0
     neutral_mass = 0.0
+
+    CONSISTENT_WEIGHT = 0.6 
     
     print("\n🧮 MATH ENGINE:")
     for f, verdict in zip(facts, per_chunk):
@@ -507,10 +657,16 @@ def calculate_mathematical_score(llm_result, facts):
         label = verdict['label']
         
         if label == "SUPPORT":
+            weight = sim * conf
             support_mass += weight
         elif label == "CONTRADICT":
+            weight = sim * conf
             refute_mass += weight
+        elif label == "CONSISTENT":
+            weight = sim * conf * CONSISTENT_WEIGHT
+            support_mass += weight   # counts toward decisive mass, but discounted
         else:
+            weight = sim * conf
             neutral_mass += weight
         
         print(f"   - '{f['source']}': sim={sim:.2f} conf={conf:.2f} → {label} (w={weight:.2f})")
@@ -543,17 +699,39 @@ def calculate_mathematical_score(llm_result, facts):
         "final_accuracy_score": final_score,
     }
 
+# Module-level, created once — reused across requests instead of spinning up
+# new threads on every message.
+_llm_executor = ThreadPoolExecutor(max_workers=4)
 
-def orchestrate_analysis(text, previous_text=None, topic="ai"):
-    """Combines Fact Checking + Relevance Evaluation."""
+def orchestrate_analysis(text, previous_text=None, topic="ai", debater_name=None):
     print(f"\n📢 ORCHESTRATOR: Analyzing for Topic [{topic.upper()}]...")
-    
-    facts = search(topic, text, k=3)
-    llm_fact = verify_claim_with_llm(text, facts)
+    print(f"🗣️  Statement from {debater_name or 'Unknown User'}: \"{text}\"")
+
+    t0 = time.perf_counter()
+    facts = search(topic, text)
+    t1 = time.perf_counter()
+
+    # Fact-check and discourse-relevance are independent Gemini calls —
+    # run them concurrently instead of sequentially.
+    fact_future = _llm_executor.submit(verify_claim_with_llm, text, facts)
+    relevance_future = _llm_executor.submit(
+        relevance.compute_relevance_score, text, previous_text, topic
+    )
+
+    llm_fact = fact_future.result()
+    relevance_res = relevance_future.result()
+    t2 = time.perf_counter()
+
     math_fact = calculate_mathematical_score(llm_fact, facts)
-    
-    relevance_res = relevance.compute_relevance_score(text, previous_text, topic)
-    
+    t3 = time.perf_counter()
+
+    print(
+        f"⏱️  retrieval+rerank: {(t1-t0)*1000:.0f}ms | "
+        f"parallel LLM calls: {(t2-t1)*1000:.0f}ms | "
+        f"math: {(t3-t2)*1000:.0f}ms | "
+        f"TOTAL: {(t3-t0)*1000:.0f}ms"
+    )
+
     return {
         "fact_verdict": math_fact['final_verdict'],
         "fact_confidence": int(round(
@@ -574,7 +752,30 @@ def orchestrate_analysis(text, previous_text=None, topic="ai"):
     }
 
 
+
+
+def warmup_models():
+    """
+    Forces PyTorch to compile the execution graphs by running a dummy inference.
+    Prevents the 2-second cold-start spike on the first user request.
+    """
+    print("🔥 Warming up ML models (compiling execution graphs)...")
+    try:
+        # 1. Warm up Bi-Encoder
+        embedding_model.encode(["warmup"], normalize_embeddings=True)
+        
+        # 2. Warm up Cross-Encoder
+        cross_encoder.predict([["warmup query", "warmup document"]])
+        
+        print("✅ ML Models warmed up and ready for sub-second inference.")
+    except Exception as e:
+        print(f"⚠️ Warning: Model warmup failed: {e}")
+
+
+
 if __name__ == "__main__":
+
+    # For TESTING
     topic = "ai"
     prev_arg = "Artificial intelligence poses no threat to job security."
     curr_resp = "AI tools will automate repetitive tasks and eliminate positions."
@@ -1197,6 +1398,20 @@ def main():
 if __name__ == "__main__":
     main()
 
+==================================================
+FILE: ./test_orchestrator_followup.py
+==================================================
+from search_engine.core import orchestrate_analysis
+
+prev = "AI data centers are a major driver of freshwater depletion in already water-stressed regions."
+mock_statement = "That is true, but agriculture accounts for roughly 70% of global freshwater withdrawals, making AI's share comparatively small."
+
+result = orchestrate_analysis(
+    text=mock_statement,
+    previous_text=prev,
+    topic="ai",
+    debater_name="TestDebater"
+)
 ==================================================
 FILE: ./scraper/crawler.py
 ==================================================

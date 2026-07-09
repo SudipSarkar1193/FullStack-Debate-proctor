@@ -4,7 +4,10 @@ import pickle
 import numpy as np
 import faiss
 import json
-from sentence_transformers import SentenceTransformer
+import time
+import math
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from google.genai import types
 
@@ -31,9 +34,12 @@ else:
 # 1. Modern Gemini Client
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 2. Local BAAI Embedding Model
+# 2. Local BAAI Embedding Model & CrossEncoder
 print("📥 Loading BAAI/bge-small-en-v1.5 locally...")
 embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+print("📥 Loading Cross-Encoder (ms-marco-MiniLM-L-6-v2)...")
+cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 VERIFIER_MODEL = "gemini-3.1-flash-lite"
 
@@ -79,39 +85,55 @@ def load_brain(topic):
     except Exception as e:
         raise RuntimeError(f"Failed to load brain for {topic}: {e}")
 
-def search(topic, query, k=5):
-    """Topic-aware search."""
+def search(topic, query, fetch_k=20, top_k=5):
+    """Two-Stage Topic-aware search (Retrieve & Re-rank)."""
     brain = load_brain(topic)
     index = brain["index"]
     metadata = brain["metadata"]
-    
+
     print(f"🔍 Searching [{topic.upper()}]: '{query[:50]}...'")
-    
-    # Generate query embedding locally using BAAI
+
     query_vec = embedding_model.encode([query], normalize_embeddings=True).astype('float32')
-    
-    distances, indices = index.search(query_vec, k)
-    
-    results = []
+    distances, indices = index.search(query_vec, fetch_k)
+
+    candidates = []
     for i, idx in enumerate(indices[0]):
-        if idx == -1 or idx >= len(metadata): continue 
-        
+        if idx == -1 or idx >= len(metadata):
+            continue
         meta = metadata[idx]
         l2_distance = float(distances[0][i])
-        similarity = max(0.0, min(1.0, 1 - (l2_distance / 2)))
-        
-        results.append({
+        # Unchanged bi-encoder cosine-derived similarity — same scale your
+        # math engine (DECISIVE_MASS_FLOOR, CONSISTENT_WEIGHT) already understands.
+        bi_encoder_sim = max(0.0, min(1.0, 1 - (l2_distance / 2)))
+        candidates.append({
             "text": meta['text'],
             "source": meta['title'],
             "url": meta['url'],
-            "similarity": similarity
+            "similarity": bi_encoder_sim,
         })
 
-    print(f"\n📚 TOP {len(results)} SIMILAR STATEMENTS RETRIEVED:")
+    if not candidates:
+        return []
+
+    # Cross-encoder is used ONLY to select the best 5 of 20 — its raw logits
+    # (observed ~-5 to -11 for this domain) aren't on the math engine's
+    # expected 0-1 scale, so we never repurpose them as `similarity`.
+    cross_inp = [[query, c['text']] for c in candidates]
+    cross_scores = cross_encoder.predict(cross_inp)
+
+    for c, score in zip(candidates, cross_scores):
+        c['_rerank_score'] = float(score)
+
+    candidates.sort(key=lambda c: c['_rerank_score'], reverse=True)
+    results = [
+        {k: v for k, v in c.items() if k != '_rerank_score'}
+        for c in candidates[:top_k]
+    ]
+
+    print(f"\n📚 TOP {len(results)} RE-RANKED STATEMENTS SENT TO GEMINI:")
     for rank, r in enumerate(results, start=1):
-        print(f"\n   {rank}. [{r['source']}] (sim={r['similarity']:.2f}): {r['text']}")
-            
-        
+        print(f"   {rank}. [{r['source']}] (sim={r['similarity']:.2f}): {r['text']}...")
+
     return results
 
 @retry(
@@ -271,19 +293,39 @@ def calculate_mathematical_score(llm_result, facts):
         "final_accuracy_score": final_score,
     }
 
+# Module-level, created once — reused across requests instead of spinning up
+# new threads on every message.
+_llm_executor = ThreadPoolExecutor(max_workers=4)
 
-def orchestrate_analysis(text, previous_text=None, topic="ai", debater_name = None):
-    """Combines Fact Checking + Relevance Evaluation."""
+def orchestrate_analysis(text, previous_text=None, topic="ai", debater_name=None):
     print(f"\n📢 ORCHESTRATOR: Analyzing for Topic [{topic.upper()}]...")
-
     print(f"🗣️  Statement from {debater_name or 'Unknown User'}: \"{text}\"")
-    
-    facts = search(topic, text, k=5)
-    llm_fact = verify_claim_with_llm(text, facts)
+
+    t0 = time.perf_counter()
+    facts = search(topic, text)
+    t1 = time.perf_counter()
+
+    # Fact-check and discourse-relevance are independent Gemini calls —
+    # run them concurrently instead of sequentially.
+    fact_future = _llm_executor.submit(verify_claim_with_llm, text, facts)
+    relevance_future = _llm_executor.submit(
+        relevance.compute_relevance_score, text, previous_text, topic
+    )
+
+    llm_fact = fact_future.result()
+    relevance_res = relevance_future.result()
+    t2 = time.perf_counter()
+
     math_fact = calculate_mathematical_score(llm_fact, facts)
-    
-    relevance_res = relevance.compute_relevance_score(text, previous_text, topic)
-    
+    t3 = time.perf_counter()
+
+    print(
+        f"⏱️  retrieval+rerank: {(t1-t0)*1000:.0f}ms | "
+        f"parallel LLM calls: {(t2-t1)*1000:.0f}ms | "
+        f"math: {(t3-t2)*1000:.0f}ms | "
+        f"TOTAL: {(t3-t0)*1000:.0f}ms"
+    )
+
     return {
         "fact_verdict": math_fact['final_verdict'],
         "fact_confidence": int(round(
@@ -302,6 +344,27 @@ def orchestrate_analysis(text, previous_text=None, topic="ai", debater_name = No
         "topic_similarity": relevance_res.get('topic_similarity', 0.0),
         "evidence": facts
     }
+
+
+
+
+def warmup_models():
+    """
+    Forces PyTorch to compile the execution graphs by running a dummy inference.
+    Prevents the 2-second cold-start spike on the first user request.
+    """
+    print("🔥 Warming up ML models (compiling execution graphs)...")
+    try:
+        # 1. Warm up Bi-Encoder
+        embedding_model.encode(["warmup"], normalize_embeddings=True)
+        
+        # 2. Warm up Cross-Encoder
+        cross_encoder.predict([["warmup query", "warmup document"]])
+        
+        print("✅ ML Models warmed up and ready for sub-second inference.")
+    except Exception as e:
+        print(f"⚠️ Warning: Model warmup failed: {e}")
+
 
 
 if __name__ == "__main__":

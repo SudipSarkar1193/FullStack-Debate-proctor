@@ -1,0 +1,20 @@
+# Web Framework & Validation
+fastapi>=0.109.0
+uvicorn>=0.27.0
+pydantic>=2.6.0
+
+# Machine Learning & Vector Search
+faiss-cpu>=1.7.4
+sentence-transformers>=2.3.1
+numpy>=1.26.0
+
+# LLM APIs
+google-genai>=0.3.0
+
+# Database & Scraping
+psycopg2-binary>=2.9.9
+wikipedia-api>=0.6.0
+
+# Utilities
+python-dotenv>=1.0.0
+tenacity>=8.2.0

@@ -105,10 +105,7 @@ export const postMessage = async (
 
 // --- TOPICS & USERS (Mock) ---
 export const getTopics = async (): Promise<Topic[]> => Promise.resolve(mockTopics);
-export const getUsers = async (role?: "debater" | "audience"): Promise<User[]> => {
-  if (role) return Promise.resolve(mockUsers.filter((u) => u.role === role));
-  return Promise.resolve(mockUsers);
-};
+export const getUsers = async (): Promise<User[]> => Promise.resolve(mockUsers);
 
 // --- CHALLENGES ---
 

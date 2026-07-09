@@ -14,7 +14,6 @@ import { toast } from "sonner";
 const LoginPage: React.FC = () => {
   const [username, setUsername] = useState<string>("");
   const [password, setPassword] = useState<string>("");
-  // const [role, setRole] = useState<"debater" | "audience">("debater");
 
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -32,7 +31,7 @@ const LoginPage: React.FC = () => {
       navigate("/dashboard");
     } else {
       toast.error("Login Failed", {
-        description: "Invalid credentials or role mismatch",
+        description: "Invalid username or password",
       });
     }
   };

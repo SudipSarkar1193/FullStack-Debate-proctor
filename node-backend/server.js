@@ -31,6 +31,18 @@ const io = new Server(server, { cors: corsOptions });
 
 const DATA_FILE = path.join(__dirname, "debates_data.json");
 
+// --- Server-authoritative timing config ---
+// Previously, a debate only ever got marked "completed" when a PARTICIPANT'S
+// BROWSER's local setInterval countdown happened to reach 0 while their tab
+// was open. If nobody had the tab open (abandoned debate, test data, closed
+// laptop, etc.) the debate stayed "live"/"pending" forever, which is why the
+// dashboard could show dozens of "live" debates that were not actually live.
+// The fixes below make the server the source of truth for when a debate
+// should end, independent of any client being connected.
+const ROUND_DURATION_SEC = 150; // seconds per round (matches original timeRemaining default)
+const PENDING_EXPIRY_MS = 60 * 60 * 1000; // 1 hour: open challenges nobody joined
+const SWEEP_INTERVAL_MS = 30 * 1000; // how often the server checks for expired debates
+
 // --- Non-Blocking Persistence ---
 const debates = {};        
 const exchangeBuffers = {}; 
@@ -57,6 +69,51 @@ function loadData() {
 }
 
 loadData();
+
+// ---------------------------------------------------------------
+// SWEEP JOB — server-side authority over debate lifecycle
+// ---------------------------------------------------------------
+// Runs periodically so debates don't rely on a connected client to ever
+// close them out. Two things get cleaned up:
+//   1. "live" debates whose expectedEndAt has passed -> marked "completed"
+//   2. "pending" debates (never joined) older than PENDING_EXPIRY_MS -> "expired"
+// Both changes are broadcast over socket.io so anyone currently watching
+// gets the update immediately, and are persisted so the dashboard's next
+// poll (every 5s) reflects reality instead of stale test data.
+function sweepStaleDebates() {
+  const now = Date.now();
+  let changed = false;
+
+  for (const debate of Object.values(debates)) {
+    if (debate.status === "live") {
+      // Fall back to startedAt + totalRounds*ROUND_DURATION_SEC for any
+      // legacy debate created before expectedEndAt existed.
+      const endAtMs = debate.expectedEndAt
+        ? new Date(debate.expectedEndAt).getTime()
+        : new Date(debate.startedAt).getTime() + debate.totalRounds * ROUND_DURATION_SEC * 1000;
+
+      if (now >= endAtMs) {
+        debate.status = "completed";
+        debate.completedAt = new Date(now).toISOString();
+        debate.autoCompletedReason = "time_expired_server_sweep";
+        changed = true;
+        io.to(debate.id).emit("debate-updated", debate);
+      }
+    } else if (debate.status === "pending" && !debate.debater2?.id) {
+      const startedAtMs = new Date(debate.startedAt).getTime();
+      if (now - startedAtMs >= PENDING_EXPIRY_MS) {
+        debate.status = "expired";
+        changed = true;
+        io.to(debate.id).emit("debate-updated", debate);
+      }
+    }
+  }
+
+  if (changed) saveData();
+}
+
+sweepStaleDebates(); // clean up immediately on boot, don't wait for the first interval
+setInterval(sweepStaleDebates, SWEEP_INTERVAL_MS);
 
 // ---------------------------------------------------------------
 // REST ENDPOINTS
@@ -137,6 +194,14 @@ app.put("/api/debates/:id/join", (req, res) => {
   debate.debater2 = { id: debater2.id, username: debater2.username, position: oppositePosition };
   debate.status = "live";
 
+  // Real, server-side clock for this debate. The frontend timer now derives
+  // its display from this instead of a client-local countdown, and the
+  // sweep job below uses it to force-complete debates that ran out the
+  // clock while nobody's browser was open to notice.
+  const now = Date.now();
+  debate.liveStartedAt = new Date(now).toISOString();
+  debate.expectedEndAt = new Date(now + debate.totalRounds * ROUND_DURATION_SEC * 1000).toISOString();
+
   debates[debate.id] = debate;
   saveData();
 
@@ -213,7 +278,9 @@ io.on("connection", (socket) => {
         message._aiData = {
           factual_score: data.factual_score,
           relevance_score: data.relevance_score,
-          reasoning: data.discourse_reason || data.explanation
+          fact_explanation: data.explanation,      // Pass the hard facts
+          relevance_reason: data.discourse_reason, // Pass the logic
+          reasoning: data.discourse_reason         // Kept for backwards compatibility
         };
       }
     } catch (err) {
